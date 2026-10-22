@@ -1,0 +1,30 @@
+
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+
+trustvault.db
+*.db
+private_uploads/
+uploads/
+
+app_backup*.py
+app_before_test_cleanup.py
+*.zip
+app_before_*.py
+app_backup*.py
+index.html.txt
+imp pro trust vault.pytests/test_security_before_move.py
+imp pro trust vault.py
+tests/test_security_before_move.py

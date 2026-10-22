@@ -1,0 +1,34 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Document - TrustVault</title>
+</head>
+<body>
+    <h1>TrustVault</h1>
+    <h2>Upload a Document</h2>
+
+    {% if message %}
+        <p>{{ message }}</p>
+    {% endif %}
+
+    <form method="POST" enctype="multipart/form-data">
+        <label for="document">Choose document:</label>
+        <input type="file" id="document" name="document"
+               accept=".pdf,.docx,.txt" required>
+        <br><br>
+
+        <label for="category">Category:</label>
+        <input type="text" id="category" name="category"
+               placeholder="e.g. College, Personal" maxlength="100">
+        <br><br>
+
+        <button type="submit">Upload Document</button>
+    </form>
+
+    <p><a href="/">Home</a></p>
+    <p><a href="/documents">My Documents</a></p>
+</body>
+</html>
