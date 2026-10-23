@@ -6,6 +6,8 @@ Live Demo: [TrustVault]((https://3.91.27.213/))
 
 TrustVault is a web application designed to help users share documents securely. It aims to ensure that users can access only the documents they are authorized to view and that document activity can be reviewed through audit records.
 
+Live Demo: [TrustVault]((http://3.91.27.213/))
+
 ## Project Goals
 
 - Authenticate users before granting access to protected features.
