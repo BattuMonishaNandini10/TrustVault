@@ -1,120 +1,104 @@
-Live Demo: [TrustVault]((https://3.91.27.213/))
-
-# TrustVault
+# TrustVault — Secure Document Sharing
 
 **Secure document sharing with role-based access control and an auditable trail.**
 
-TrustVault is a web application designed to help users share documents securely. It aims to ensure that users can access only the documents they are authorized to view and that document activity can be reviewed through audit records.
+TrustVault is a Flask-based document-sharing application built for the Snovasys Fresher Hiring Challenge 2026. It aims to ensure that users can access only documents they are authorized to view and that document activity can be reviewed through audit records.
 
-Live Demo: http://3.91.27.213
+## Live Demo
 
-## Project Goals
+[**TrustVault — Open Website**](http://3.91.27.213/)
 
-- Authenticate users before granting access to protected features.
-- Separate permissions for owners, viewers, and administrators.
-- Support document uploads and controlled sharing.
-- Allow document owners to grant and revoke access.
-- Record document-related events for auditing.
-- Verify document integrity using SHA-256 hashes.
-- Test authorization rules to prevent unauthorized document access.
+**GitHub Repository:** [BattuMonishaNandini10/TrustVault](https://github.com/BattuMonishaNandini10/TrustVault)
+
+> **Security warning:** The current demo uses HTTP, not HTTPS. Do not upload real, confidential, or personal documents to the demo.
+
+## Features
+
+- Authentication with administrator, owner and viewer roles
+- Document upload and management
+- Document-specific sharing permissions
+- Granting and revoking access
+- Server-side access-control checks
+- SHA-256 document integrity verification
+- Security and document activity logging
+- Administrative audit view
+- Automated security tests
+
+Features should be considered verified only when confirmed in the current code and deployed environment.
 
 ## Technology Stack
 
-- **Language:** Python
-- **Web framework:** Flask
-- **Database:** SQLite
-- **Authentication:** Flask-Login and password hashing
-- **File integrity:** SHA-256
-- **Deployment:**AWS EC2, with the deployment configuration documented as verified
-- **Testing:** Pytest
+- Python
+- Flask
+- SQLite
+- AWS EC2
+- Amazon S3 integration
+- Amazon CloudWatch logging integration
 
-## Roles and Permissions
+## Role Model
 
-| Role | Intended permissions |
+| Role | Intended access |
 |---|---|
-| Owner | Upload and manage owned documents and control sharing permissions |
-| Viewer | Access documents explicitly shared with them |
-| Admin | Access authorized administrative features and audit records |
+| Administrator | Administrative functions and authorized audit review |
+| Owner | Manage owned documents and grant or revoke access |
+| Viewer | Access only documents shared with their account, within the granted permission |
 
-Actual permissions are enforced by the application and must be verified using automated tests.
+Document permissions must be checked by the server on every protected request. Hiding a button is not sufficient authorization.
 
 ## Security Design
 
-TrustVault is designed around the principle of least privilege.
+TrustVault is designed around three key principles:
 
-- Authenticate users before allowing protected operations.
-- Check document-level permissions on every relevant access request.
-- Restrict access to private file storage.
-- Revoke sharing permissions when access is no longer required.
-- Record relevant actions and denied attempts in audit records.
-- Verify file integrity where supported by the application.
-- Test that one user cannot access another user's documents without permission.
+1. **Authorization on every request:** A user must not access a document merely by guessing its URL or ID.
+2. **Revocation:** Removing a permission must block subsequent server-mediated access.
+3. **Auditing:** Important document actions and denied access attempts should be recorded so activity can be investigated.
 
-See [THREATS.md](THREATS.md) for the threat model and security verification status.
-
-## Local Setup
-
-1. Install a compatible Python version.
-2. Clone this repository.
-3. Create and activate a virtual environment.
-4. Install dependencies from `requirements.txt`.
-5. Follow the database initialization instructions provided with the project.
-6. Configure the required application secret using an environment variable.
-7. Start the Flask application using the documented development instructions.
-
-Detailed clean-clone instructions will be added after the repository's application files and setup scripts have been checked.
+SHA-256 can help detect file-content changes when compared with a trusted expected hash. It does not, by itself, make audit records tamper-proof.
 
 ## Testing
 
-Run the documented automated test suite after installing the project dependencies. The security tests should verify that unauthorized users cannot access protected documents and that access-control failures are detected.
+Run the automated tests from the project directory:
 
-Test commands and expected results will be documented after confirming the repository's actual test configuration.
+```bash
+python -m pytest -q
+```
 
-## Deployment
+A previous local test run reported 195 passing tests. Run the suite again on the final commit before submission; local test results do not prove that every deployed route is secure.
 
-The project is intended to run on AWS EC2. Deployment documentation will identify the services actually used, configuration requirements, and steps to launch the application.
+## Documentation
 
-**Live application:** To be added after the deployed application and its access controls have been verified.
+- `THREATS.md` — attack scenarios, mitigations and accepted risks
+- `PROMPTS.md` — dated AI-use entries, mistakes and corrective work
+- `API.md` — endpoint authorization documentation
+- `SETUP.md` — setup and deployment instructions
+- `TESTING.md` — security test plan and verification evidence
+- `WRITEUP.md` — design decisions, AI use and unfinished work
+- `DEMO_SCRIPT.md` — five-minute demo plan
 
-## Demo Accounts
+## Known Limitations and Unfinished Work
 
-Disposable demo accounts for the owner, viewer, and admin roles will be documented after confirming that the live environment is seeded and working. Credentials must never be reused from personal accounts.
+- HTTPS has not yet been configured and verified for the current public demo.
+- Audit tamper resistance must not be assumed unless independently protected and tested.
+- AWS S3 storage and CloudWatch event delivery must be verified end to end on the deployed version.
+- Additional adversarial testing is needed to check direct routes, permission revocation and unauthorized document access.
+- The project is a hiring-challenge prototype, not a claim of production readiness.
 
-## Project Documentation
+## Demo Credentials
 
-- [Threat Model](THREATS.md) — threats, mitigations, and verification status.
-- [AI Prompt Log](PROMPTS.md) — dated AI-assisted development records.
-- [API Documentation](API.md) — endpoints and their permission requirements.
-- [Project Write-up](WRITEUP.md) — architecture, design decisions, AI usage, and known limitations.
+Add verified, challenge-only credentials for one administrator, one owner and one viewer before submission. Do not publish personal, reused or production passwords.
 
-These documents will be added as the submission is prepared.
+| Role | Username | Password |
+|---|---|---|
+| Administrator | Replace with verified demo username | Set a challenge-only password |
+| Owner | Replace with verified demo username | Set a challenge-only password |
+| Viewer | Replace with verified demo username | Set a challenge-only password |
 
-## Known Limitations
+Replace these placeholders only after confirming the accounts work on the deployed site.
 
-The final submission will explicitly list any features, tests, or deployment controls that remain incomplete or unverified.
+## Demo Video
 
-## Author
+Add the link to your five-minute demo video here once it is recorded and available to the judges.
 
-Created for the Snovasys Fresher Hiring Challenge 2026.
+## Project Status
 
-## Known Limitations, Mistakes and Lessons Learned
-
-TrustVault is a hiring-challenge project and is not yet a production-ready document management system.
-
-### Known limitations
-
-- **HTTPS:** The current demo uses HTTP. Trusted HTTPS has not yet been configured and verified.
-- **Audit protection:** Audit events are recorded by the application, but tamper-resistant storage and independent verification of the audit trail must not be assumed unless explicitly implemented and tested.
-- **Security verification:** Passing automated tests does not prove the absence of every authorization vulnerability. Further adversarial testing is needed against the deployed application.
-- **Deployment verification:** Local test results do not automatically establish that every security control behaves identically on the live AWS deployment.
-
-### Mistakes and corrective work
-
-During development, I encountered and corrected application routing, role-access, and code-structure issues. I used automated tests to help identify regressions and verify access-control behavior.
-
-I will document specific AI-generated mistakes, the evidence used to identify them, the corrections made, and the associated commits in `PROMPTS.md`. Threat scenarios, mitigations, and accepted risks are documented in `THREATS.md`.
-
-### What remains unfinished
-
-I will distinguish features that are implemented and tested from those that are only partially implemented or not yet independently verified. I will not describe the application as fully secure or production-ready without sufficient evidence.
-
+TrustVault has been developed and tested locally, and a previous test run reported 195 passing tests. Remaining deployment checks, documentation evidence and challenge submission must be completed and verified before the project is described as finished.
