@@ -1,0 +1,7 @@
+
+Flask
+Flask-Login
+boto3
+pytest
+python-dotenv
+gunicorn
