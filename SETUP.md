@@ -1,77 +1,155 @@
-# TrustVault Setup Guide
+# TrustVault — Setup Guide
 
 ## 1. Prerequisites
 
-Before setting up TrustVault, ensure that you have:
+Install the following software:
 
-- Python 3.12 or another version supported by the project
-- Git
-- A copy of the TrustVault repository
-- The project's dependency file, `requirements.txt`
-- The database initialization instructions and scripts, if required
+- Python 3.12 or a compatible supported Python version.
+- Git.
+- A terminal such as Windows Command Prompt or PowerShell.
+- An AWS account only if you intend to configure or test the AWS integrations.
 
-## 2. Obtain the Project
+## 2. Clone the Repository
 
-Open the TrustVault GitHub repository and download the source code using the GitHub website's **Code → Download ZIP** option.
+```bash
+git clone https://github.com/BattuMonishaNandini10/TrustVault.git
+cd TrustVault
+```
 
-Extract the downloaded ZIP file to a folder on your computer.
+## 3. Create a Virtual Environment
 
-## 3. Install Dependencies
+### Windows
 
-Open a terminal in the extracted project folder.
+```bat
+py -3.12 -m venv venv
+venv\Scripts\activate
+```
 
-Create and activate a Python virtual environment, then install the dependencies listed in `requirements.txt`.
+### Linux / macOS
 
-Use the dependency installation instructions appropriate for your operating system.
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
 
-## 4. Configure Secrets
+## 4. Install Dependencies
 
-Configure the application secret using the environment variable expected by the application.
+If the repository contains `requirements.txt`, run:
 
-Do not commit `.env` files, passwords, AWS credentials, or production secrets to the repository.
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-Use disposable credentials for local testing and demo accounts.
+If `requirements.txt` is missing, create and maintain it from the project's actual imports and verified environment. Do not assume that this command will work until the file is committed.
 
-## 5. Initialize the Database
+## 5. Configure Environment Variables
 
-Follow the database setup scripts and instructions included in the repository.
+Set a strong secret key for local development. Do not commit real secrets to Git.
 
-Use a fresh database for a new installation. Do not distribute a production database containing personal information or confidential documents.
+### Windows Command Prompt
 
-## 6. Start the Application
+```bat
+set TRUSTVAULT_SECRET_KEY=replace-with-a-long-random-secret
+```
 
-Follow the development startup instructions appropriate to the project's actual Flask entry point and configuration.
+### Linux / macOS
 
-Once the application starts, open the local URL displayed by the development server.
+```bash
+export TRUSTVAULT_SECRET_KEY='replace-with-a-long-random-secret'
+```
 
-Do not expose the Flask development server directly to the public internet.
+These commands set the variable for the current terminal session. Configure any other environment variables required by the actual application, including AWS settings if applicable.
 
-## 7. Run Automated Tests
+Never put AWS access keys, passwords, or production secrets in this file or in the repository.
 
-Install the test dependencies and run the project's documented test suite.
+## 6. Database Initialization
 
-Verify that the tests use an isolated test database and do not modify production data.
+TrustVault uses SQLite.
 
-The security tests should cover authentication, role restrictions, document ownership, sharing permissions, and access revocation.
+Inspect the repository for the database initialization script and follow the application's actual setup process. If the project includes `init_users.py`, `init_db.py`, or another initialization script, use the correct script for the current version.
 
-Record the actual test results before submitting the project.
+For example, only if `init_users.py` is intended to initialize the current schema:
 
-## 8. Deployment
+```bash
+python init_users.py
+```
 
-The deployed application is intended to run on AWS EC2.
+Do not run multiple initialization scripts blindly against an existing database. Confirm their purpose first.
 
-The final deployment guide must document the verified server configuration, application service, reverse proxy if used, required environment variables, database setup, and live URL.
+## 7. Start the Application
 
-Never include private SSH keys, cloud credentials, or production secrets in the repository.
+Use the startup method supported by the current `app.py`.
 
-## 9. Troubleshooting
+A typical Flask development command is:
 
-- **Dependency errors:** Confirm the Python version and install the listed project dependencies.
-- **Database errors:** Review the database path, initialization steps, and file permissions.
-- **Login errors:** Confirm that demo accounts were initialized and use the correct credentials.
-- **Permission errors:** Check the intended role and document-level authorization rules.
-- **Upload errors:** Check allowed file types, upload size limits, and private storage permissions.
+```bash
+python -m flask --app app run --debug
+```
 
-## 10. Verification Status
+If the application starts successfully, open:
 
-This document is a setup guide draft. Exact commands, database initialization steps, environment variables, and deployment instructions must be checked against the actual project before the submission is considered reproducible.
+http://127.0.0.1:5000/
+
+Debug mode is for local development only. Do not use Flask's development server or debug mode as a production deployment configuration.
+
+## 8. Demo Accounts
+
+Use the demo accounts and passwords documented in `README.md`, if they are present and verified.
+
+If the project has a seed script, inspect it before running it. Do not publish real user credentials or reuse demo passwords in production.
+
+## 9. Run Automated Tests
+
+Activate the virtual environment and run:
+
+```bash
+python -m pytest -q
+```
+
+To run the security test file specifically:
+
+```bash
+python -m pytest -q tests/test_security.py
+```
+
+Record the actual results from the final code. Passing tests on an earlier commit do not guarantee that later changes are correct.
+
+## 10. AWS Deployment
+
+TrustVault has been deployed to an AWS EC2 instance. The current public URL is:
+
+http://3.91.27.213/
+
+AWS-related configuration should be verified against the actual deployment. Document the real S3 bucket configuration, IAM permissions, CloudWatch logging setup, and production startup procedure only after confirming them.
+
+The public deployment currently uses HTTP rather than verified HTTPS. Do not upload real sensitive documents or credentials through this URL.
+
+## 11. Troubleshooting
+
+- **`ModuleNotFoundError`:** Activate the virtual environment and install the required dependencies.
+- **`TemplateNotFound`:** Confirm that the required HTML files exist in the `templates` directory.
+- **Database errors:** Verify the configured database path and initialization procedure.
+- **Login failures:** Confirm that the demo accounts were seeded correctly and that password hashing is configured as expected.
+- **AWS errors:** Check the instance's IAM role, permissions, environment variables, service configuration, and logs. Avoid placing AWS secret keys in source code.
+- **Port already in use:** Stop the previous development server or select another local port.
+
+## 12. Security Notes
+
+- Never commit `.env` files, credentials, production databases, or sensitive uploaded documents.
+- Use a separate temporary database for tests.
+- Verify authorization on direct document requests, not only on pages that list documents.
+- Use HTTPS and least-privilege AWS permissions before handling sensitive production data.
+- Review `THREATS.md` for the threat model and remaining limitations.
+
+## 13. Related Documentation
+
+- `README.md` — project overview and verified demo information.
+- `THREATS.md` — security threats, mitigations, and accepted risks.
+- `PROMPTS.md` — AI usage and corrections.
+- `API.md` — application route documentation.
+- `TESTING.md` — testing instructions and results.
+- `WRITEUP.md` — project reflection.
+- `DEMO_SCRIPT.md` — demonstration plan.
+
+**Maintenance note:** Verify every command, filename, environment variable, and deployment instruction against the current repository before submitting this guide.
