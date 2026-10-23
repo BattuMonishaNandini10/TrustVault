@@ -1,0 +1,74 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrustVault - My Documents</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f7fb;
+            margin: 0;
+            padding: 30px;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 850px;
+            margin: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+        }
+        h1 { color: #173b70; }
+        .actions { margin: 20px 0; }
+        a {
+            display: inline-block;
+            margin: 5px 8px 5px 0;
+            padding: 10px 14px;
+            background: #e7efff;
+            color: #173b70;
+            text-decoration: none;
+            border-radius: 6px;
+        }
+        a:hover { background: #d4e2ff; }
+        .logout { background: #fee2e2; color: #991b1b; }
+        .document {
+            background: #f8fafc;
+            padding: 15px;
+            margin: 12px 0;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TrustVault 🔐</h1>
+        <h2>My Documents</h2>
+        <a href="{{ url_for('edit_document', document_id=doc['id']) }}">
+    Edit Details
+</a>
+        <p>Manage and securely share your documents.</p>
+
+        {% for document in documents %}
+        <div class="document">
+            <strong>{{ document.filename }}</strong>
+            <p>Category: {{ document.category }}</p>
+            <a href="{{ url_for('share_document', document_id=document.id) }}">
+                Share
+            </a>
+        </div>
+        {% else %}
+        <p>No documents uploaded yet.</p>
+        {% endfor %}
+
+        <div class="actions">
+            <a href="{{ url_for('home') }}">Home</a>
+            <a href="{{ url_for('upload_document') }}">Upload another document</a>
+            <a class="logout" href="{{ url_for('logout') }}">Logout</a>
+        </div>
+    </div>
+</body>
+</html>

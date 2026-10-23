@@ -1,0 +1,95 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Edit Document - TrustVault</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f4f6f9;
+            color: #222;
+        }
+        .panel {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px #0001;
+        }
+        label {
+            display: block;
+            margin-top: 18px;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 11px;
+            margin-top: 7px;
+        }
+        button, .back {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 11px 16px;
+            border: 0;
+            border-radius: 5px;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        button {
+            background: #155eef;
+            color: white;
+        }
+        .back {
+            background: #e8edf5;
+            color: #222;
+        }
+        .message {
+            padding: 10px;
+            background: #edf7ed;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h2>Edit Document Details</h2>
+        <p>Update the filename or category without replacing the file.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="message">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <form method="POST">
+            <label for="filename">Filename</label>
+            <input
+                type="text"
+                id="filename"
+                name="filename"
+                value="{{ doc['filename'] }}"
+                required
+            >
+
+            <label for="category">Category</label>
+            <input
+                type="text"
+                id="category"
+                name="category"
+                value="{{ doc['category'] }}"
+                required
+            >
+
+            <button type="submit">Save Changes</button>
+            <a class="back" href="{{ url_for('shared_documents') }}">
+                Back to Shared Documents
+            </a>
+        </form>
+    </div>
+</body>
+</html>
