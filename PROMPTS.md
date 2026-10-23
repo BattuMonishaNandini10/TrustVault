@@ -1,103 +1,81 @@
-# TrustVault AI Prompt Log
+# TrustVault — AI Prompt and Usage Log
 
-## Purpose
+This file documents how AI tools were used during TrustVault development, including useful suggestions, incorrect or incomplete output, and the corrective actions taken. Entries should reflect the actual development history.
 
-This document records how AI assistance was used while developing TrustVault. AI-generated suggestions were treated as drafts and required review, testing, and correction.
+**Project:** TrustVault — Secure Document Sharing with a Real Audit Trail  
+**Repository:** https://github.com/BattuMonishaNandini10/TrustVault
 
-The entries below summarize development activities. Exact dates, prompts, outputs, fixes, and commit links must be checked against the actual conversation history and GitHub commits before final submission.
+## Entry 1 — 18 October 2026: Understanding the challenge
 
-## Entry 1 — Project Planning and Architecture
+**Prompt / task:** Explain the TrustVault problem statement and turn the requirements into a beginner-friendly implementation plan.
 
-**Date:** 2026-10-18
+**AI output:** A breakdown of the document-sharing application, security requirements, and development steps.
 
-**Area:** Architecture and project planning
+**Issue identified:** A general implementation plan does not prove that every challenge requirement has been implemented or tested.
 
-**Prompt summary:** Explain the TrustVault challenge in beginner-friendly language and create a development plan for a secure document-sharing application.
+**Corrective action:** Compared the plan with the challenge requirements and tracked features such as role-based access, document permissions, revocation, audit logging, automated security tests, deployment, and documentation.
 
-**AI output:** A phased plan covering authentication, roles, document sharing, audit records, testing, deployment, and documentation.
+**Commit link:** Add the verified commit link for the related implementation or planning changes, if applicable.
 
-**Review and outcome:** The plan helped organize the work into manageable stages. Implementation details were checked against the challenge requirements.
+## Entry 2 — 19 October 2026: Flask application setup and debugging
 
-**Evidence / commit:** Add the relevant GitHub commit link after checking the repository history.
+**Prompt / task:** Help configure the Flask application, templates, database, and login functionality, and diagnose errors encountered during development.
 
-## Entry 2 — Authentication and Session Handling
+**AI output:** Suggested code and debugging steps for Flask routes, templates, SQLite, and authentication.
 
-**Date:** 2026-10-19
+**Issue identified:** Some fixes required additional debugging, including template and route errors. Suggested code could not be assumed correct without running it.
 
-**Area:** Authentication
+**Corrective action:** Ran the application locally, checked errors in the terminal, corrected the affected files, and tested the relevant routes.
 
-**Prompt summary:** Help implement and test login, password hashing, and session handling in the Flask application.
+**Commit link:** Add the verified commit link for the related changes, if applicable.
 
-**AI output:** Guidance for authentication routes, password verification, and session management.
+## Entry 3 — 20 October 2026: Document-sharing permissions
 
-**Issue to record:** Document any actual implementation or testing issue encountered during authentication.
+**Prompt / task:** Help implement document sharing between users and restrict document access according to permissions.
 
-**Fix and verification:** Record the precise change made and the test or manual check used to verify it.
+**AI output:** Suggested permission checks and document-sharing workflow changes.
 
-**Evidence / commit:** Add the corresponding commit link.
+**Issue identified:** A document appearing in a user's shared-document list does not, by itself, prove that direct download requests are authorized correctly.
 
-## Entry 3 — Role-Based Access Control
+**Corrective action:** Tested sharing and downloading with separate demo accounts and checked that subsequent document requests enforce the intended access rules. Additional tests should cover direct requests and revoked permissions.
 
-**Date:** 2026-10-20
+**Commit link:** Add the verified commit link for the related permission changes, if applicable.
 
-**Area:** Authorization
+## Entry 4 — 21 October 2026: Role-based authorization and audit access
 
-**Prompt summary:** Help distinguish owner, viewer, and admin permissions and protect role-restricted routes.
+**Prompt / task:** Diagnose authorization problems affecting owner, viewer, and administrator routes, including the administrator audit page.
 
-**AI output:** Guidance for server-side role checks and route authorization.
+**AI output:** Suggested role restrictions and route-level authorization fixes.
 
-**Issue observed:** A role-restricted page returned an access-denied response during testing. The exact route, role, and cause should be recorded from the development history.
+**Issue identified:** Authorization behavior was inconsistent during testing, and a protected route needed additional correction. A role restriction on one page does not guarantee that all related routes are protected.
 
-**Fix and verification:** Document the actual authorization change and confirm that allowed roles succeed while unauthorized roles are denied.
+**Corrective action:** Corrected the reported audit-route restriction and tested role-specific access. Continue verifying each sensitive route with all three roles.
 
-**Evidence / commit:** Add the relevant commit link.
+**Commit link:** Add the verified commit link for the audit and authorization fix, if applicable.
 
-## Entry 4 — Document Sharing and Access Control
+## Entry 5 — 22 October 2026: Automated security tests
 
-**Date:** 2026-10-20
+**Prompt / task:** Help develop and run automated tests for TrustVault security behavior, including unauthorized access.
 
-**Area:** Document-level authorization
+**AI output:** Suggested test cases and approaches for isolating the database and checking authorization behavior.
 
-**Prompt summary:** Help test document sharing, access grants, revocation, and downloads by authorized recipients.
+**Issue identified:** Tests can pass while still missing an attack path. A test that only checks a normal page response may not prove that direct document access is denied.
 
-**AI output:** Step-by-step testing guidance for owner and viewer workflows.
+**Corrective action:** Used a separate test database and expanded security testing. Historical test results included 75 passing security tests and 195 passing tests in the full suite; rerun the tests on the final code before submission.
 
-**Observed outcome:** The shared-document download workflow was reported to work during manual testing.
+**Commit link:** Add the verified commit link for the test changes, if applicable.
 
-**Security review:** Verify that an unrelated user cannot download the same document by changing its identifier and that revoked access is denied.
+## AI Use and Verification
 
-**Evidence / commit:** Add the corresponding implementation and test commit links.
+AI was used as a development assistant for planning, debugging, code suggestions, and test development. Its suggestions were treated as proposals rather than proof of correctness.
 
-## Entry 5 — Audit Logging and Security Testing
+The application was tested through local execution and automated tests. Security-sensitive behavior requires explicit verification because an apparently working interface does not guarantee server-side authorization.
 
-**Date:** 2026-10-22
+Before submission:
 
-**Area:** Audit trail and automated tests
-
-**Prompt summary:** Help review audit access restrictions and test whether authorization controls prevent unauthorized document access.
-
-**AI output:** Guidance for role-restricted audit access and isolated security tests.
-
-**Issue observed:** An audit-route role restriction required correction during development.
-
-**Fix and verification:** Record the exact change and the automated test result. Confirm that the test fails if the relevant authorization check is removed.
-
-**Evidence / commit:** Add the actual fix and test commit links.
-
-## AI Use and Limitations
-
-AI was used as a development assistant for planning, debugging, implementation guidance, and test design. Suggestions were not treated as proof of security.
-
-Potential limitations included incorrect assumptions about existing routes, templates, database structure, or role permissions. The application needed repeated manual checks and code corrections.
-
-Security-sensitive suggestions were reviewed against the actual implementation. Any remaining unverified controls must be disclosed in the final submission.
-
-## Final Evidence Checklist
-
-- [ ] Confirm every date against the actual conversation or commit history.
-- [ ] Replace generalized prompt summaries with the actual prompts used.
-- [ ] Record the specific AI output relevant to each entry.
-- [ ] Describe the real issue encountered and the exact fix applied.
-- [ ] Add links to actual GitHub commits.
-- [ ] Include evidence from automated tests where available.
-- [ ] Do not invent test results, commits, or fixes.
+- Replace any inaccurate entry with the exact prompt and event from the actual conversation history.
+- Verify dates against the conversation and Git history.
+- Replace each placeholder with a real commit link, or state that no specific commit was identified.
+- Include at least two real examples involving authorization, access control, or audit logging.
+- Document any additional AI mistakes and the specific corrections made.
+- Do not claim that AI-generated code was correct unless it was checked and tested.
