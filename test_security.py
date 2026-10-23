@@ -43,6 +43,7 @@ def isolated_app(monkeypatch):
             username TEXT NOT NULL,
             permission TEXT NOT NULL DEFAULT 'read',
             user_id INTEGER,
+            expires_at TEXT,
             UNIQUE(document_id, username)
         );
 
@@ -2391,4 +2392,370 @@ def test_owner_cannot_grant_invalid_permission(isolated_app):
         conn.close()
 
     assert permission is None
+
+
+def test_init_db_adds_expiry_column_without_removing_existing_shares(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "trustvault_legacy.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer'
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY,
+            filename TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            category TEXT NOT NULL
+        );
+        CREATE TABLE document_permissions (
+            id INTEGER PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            permission TEXT NOT NULL DEFAULT 'read',
+            UNIQUE(document_id, username)
+        );
+        CREATE TABLE audit_logs (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            document_id INTEGER,
+            details TEXT,
+            result TEXT NOT NULL
+        );
+        INSERT INTO users VALUES (1, 'owner', 'hash', 'owner');
+        INSERT INTO documents VALUES (1, 'legacy.pdf', 'owner', 'Legal');
+        INSERT INTO document_permissions
+            (id, document_id, username, permission)
+            VALUES (1, 1, 'viewer', 'read');
+    """)
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setattr(trustvault, "DATABASE", str(database_path))
+
+    trustvault.init_db()
+    trustvault.init_db()
+
+    connection = sqlite3.connect(database_path)
+    try:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(document_permissions)"
+            )
+        }
+        grant = connection.execute(
+            "SELECT document_id, username, permission, expires_at "
+            "FROM document_permissions WHERE id = 1"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert "expires_at" in columns
+    assert grant == (1, "viewer", "read", None)
+
+
+def test_owner_can_set_expiry_for_a_share(isolated_app):
+    client = isolated_app.test_client()
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/share/1",
+        data={
+            "username": "test_admin",
+            "permission": "read",
+            "expires_at": "2099-01-01T00:00",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    conn = trustvault.get_db_connection()
+    try:
+        grant = conn.execute(
+            "SELECT expires_at FROM document_permissions "
+            "WHERE document_id = 1 AND username = 'test_admin'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert grant["expires_at"] == "2099-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("expiry", ["2000-01-01T00:00", "not-a-date"])
+def test_owner_cannot_create_share_with_invalid_or_past_expiry(
+    isolated_app, expiry
+):
+    client = isolated_app.test_client()
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/share/1",
+        data={"username": "test_admin", "expires_at": expiry},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    conn = trustvault.get_db_connection()
+    try:
+        grant = conn.execute(
+            "SELECT id FROM document_permissions "
+            "WHERE document_id = 1 AND username = 'test_admin'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert grant is None
+
+
+@pytest.mark.parametrize(
+    ("path", "permission"),
+    [
+        ("/view/1", "read"),
+        ("/preview-pdf/1", "read"),
+        ("/download/1", "read"),
+        ("/edit/1", "edit"),
+    ],
+)
+def test_expired_share_denies_direct_access_and_is_audited(
+    isolated_app, monkeypatch, path, permission
+):
+    client = isolated_app.test_client()
+    events = []
+    monkeypatch.setattr(
+        trustvault, "log_event",
+        lambda *args, **kwargs: events.append(args),
+    )
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE document_permissions "
+            "SET permission = ?, expires_at = ? "
+            "WHERE document_id = 1 AND username = 'test_viewer'",
+            (permission, "2000-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    response = client.get(path, follow_redirects=False)
+
+    assert response.status_code == 403
+    assert events
+    assert events[0][1] == "SHARE_EXPIRED"
+    assert events[0][-1] == "DENIED"
+
+
+def test_active_share_still_allows_access_check(isolated_app):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE document_permissions SET expires_at = ? "
+            "WHERE document_id = 1 AND username = 'test_viewer'",
+            ("2099-01-01T00:00:00+00:00",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    response = client.get("/download/1", follow_redirects=False)
+
+    # The test fixture has no file on disk, but the active grant passes
+    # authorization and reaches the file-not-found check.
+    assert response.status_code == 404
+
+
+def test_expired_share_is_hidden_from_shared_list_and_search(isolated_app):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE document_permissions SET expires_at = ? "
+            "WHERE document_id = 1 AND username = 'test_viewer'",
+            ("2000-01-01T00:00:00+00:00",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    shared_response = client.get("/shared")
+    search_response = client.get("/document-search?name=sample")
+    api_response = client.get("/api/document-search?name=sample")
+
+    assert shared_response.status_code == 200
+    assert b"sample.txt" not in shared_response.data
+    assert search_response.status_code == 200
+    assert b"sample.txt" not in search_response.data
+    assert api_response.status_code == 200
+    assert api_response.get_json() == {"count": 0, "documents": []}
+
+
+def test_document_lists_filter_by_name_and_category_without_crossing_roles(
+    isolated_app
+):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO documents
+                (id, filename, owner, category, owner_id, stored_filename)
+            VALUES (2, 'finance-plan.txt', 'test_owner', 'Finance', 1,
+                    'finance-plan.txt')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO document_permissions
+                (document_id, username, permission, user_id)
+            VALUES (2, 'test_viewer', 'read', 2)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO documents
+                (id, filename, owner, category, owner_id, stored_filename)
+            VALUES (3, 'secret-payroll.txt', 'test_admin', 'Finance', 3,
+                    'secret-payroll.txt')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    owner_response = client.get("/my-docs?name=finance&category=finance")
+
+    assert owner_response.status_code == 200
+    assert b"finance-plan.txt" in owner_response.data
+    assert b"sample.txt" not in owner_response.data
+    assert b"secret-payroll.txt" not in owner_response.data
+
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    shared_response = client.get("/shared?category=finance")
+    viewer_response = client.get("/shared?name=secret-payroll")
+    api_response = client.get("/api/document-search?name=secret-payroll")
+
+    assert shared_response.status_code == 200
+    assert b"finance-plan.txt" in shared_response.data
+    assert b"sample.txt" not in shared_response.data
+    assert viewer_response.status_code == 200
+    assert b"secret-payroll.txt" not in viewer_response.data
+    assert api_response.status_code == 200
+    assert api_response.get_json() == {"count": 0, "documents": []}
+
+
+@pytest.mark.parametrize(
+    ("user_id", "username", "role"),
+    [
+        (1, "test_owner", "owner"),
+        (2, "test_viewer", "viewer"),
+    ],
+)
+def test_security_dashboard_is_admin_only(
+    isolated_app, user_id, username, role
+):
+    client = isolated_app.test_client()
+    with client.session_transaction() as session:
+        session["user_id"] = user_id
+        session["username"] = username
+        session["role"] = role
+
+    response = client.get("/admin/security-dashboard")
+
+    assert response.status_code == 403
+    assert b"Sensitive audit" not in response.data
+
+
+def test_admin_security_dashboard_shows_counts_and_recent_activity(
+    isolated_app
+):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO audit_logs
+                (timestamp, username, action, document_id, details, result)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-10-23T12:00:00+00:00",
+                "test_viewer",
+                "DOWNLOAD",
+                1,
+                "Denied download for dashboard test",
+                "DENIED",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 3
+        session["username"] = "test_admin"
+        session["role"] = "admin"
+
+    home_response = client.get("/")
+    response = client.get("/admin/security-dashboard")
+
+    assert home_response.status_code == 200
+    assert b"Security Dashboard" in home_response.data
+    assert response.status_code == 200
+    assert b"Security Dashboard" in response.data
+    assert b"Total Documents" in response.data
+    assert b"Documents With Active Shares" in response.data
+    assert b"Access-Denied Attempts" in response.data
+    assert b"Recent Audit Activity" in response.data
+    assert b"Denied download for dashboard test" in response.data
+    assert b"/admin/security-dashboard" in response.data
+    assert (
+        b'<div class="stat-number">1</div>\n'
+        b'        <div class="stat-label">Total Documents</div>'
+    ) in response.data
+    assert (
+        b'<div class="stat-number">1</div>\n'
+        b'        <div class="stat-label">Documents With Active Shares</div>'
+    ) in response.data
+    assert (
+        b'<div class="stat-number">1</div>\n'
+        b'        <div class="stat-label">Access-Denied Attempts</div>'
+    ) in response.data
 
