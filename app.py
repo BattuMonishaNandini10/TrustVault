@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from botocore.exceptions import ClientError
+from cloudwatch_security import emit_security_event
 from io import BytesIO
 from datetime import datetime, timezone
 from functools import wraps
@@ -911,7 +912,7 @@ def home():
                 FROM documents d
                 JOIN document_permissions p
                   ON p.document_id=d.id
-                WHERE p.username=? AND p.permission='read'
+                WHERE p.username=? AND p.permission IN ('read', 'edit')
                 ORDER BY d.id DESC LIMIT 8
             """, (username,)).fetchall()
 
@@ -1480,7 +1481,7 @@ def shared_documents():
     conn = get_db_connection()
     try:
         docs = conn.execute("""
-            SELECT d.*, u.username AS owner_name
+            SELECT d.*, u.username AS owner_name, p.permission AS shared_permission p.permission AS shared_permission
             FROM documents d
             JOIN document_permissions p ON p.document_id=d.id
             JOIN users u ON u.id=d.owner_id
@@ -1505,18 +1506,16 @@ def shared_documents():
             <span class="file-icon">ICON</span>NAME
           </span></td>
           <td>OWNER</td>
-          <td><span class="badge blue">◉ Read only</span></td>
+          <td><span class="badge blue">PERMISSION_LABEL</span></td>
           <td><a class="btn btn-small" href="DOWNLOAD">Download Document</a></td>
         </tr>
                """.replace("ICON", symbol).replace(
             "NAME", filename
         ).replace(
-            "OWNER", doc["owner_name"]
-        ).replace(
-            "VIEW", url_for(
-                "view_document", document_id=doc["id"]
-            )
-        )
+    "PERMISSION_LABEL",
+    "Edit access" if doc["shared_permission"] == "edit"
+    else "Read only"
+)
     if not rows:
         rows = """
         <tr><td colspan="4">
@@ -1581,7 +1580,7 @@ def view_document(document_id):
             SELECT id FROM document_permissions
             WHERE document_id = ?
               AND username = ?
-              AND permission = 'read'
+              AND permission IN ('read', 'edit')
         """, (document_id, username)).fetchone()
     finally:
         conn.close()
@@ -1784,7 +1783,7 @@ def download_document(document_id):
     try:
         permission = conn.execute("""
             SELECT id FROM document_permissions
-            WHERE document_id=? AND username=? AND permission='read'
+            WHERE document_id=? AND username=? AND permission IN ('read', 'edit')
         """, (document_id, username)).fetchone()
     finally:
         conn.close()
@@ -1887,7 +1886,12 @@ def share_document(document_id):
         abort(403)
 
     if request.method == "POST":
+        
         target_username = request.form.get("username", "").strip()
+        app.logger.warning("SHARE DEBUG: document_id=%s username=%r permission=%r",
+                   document_id, target_username,
+                   request.form.get("permission"))
+        requested_permission = request.form.get("permission", "read").strip().lower()
 
         conn = get_db_connection()
         try:
@@ -1895,7 +1899,9 @@ def share_document(document_id):
                 SELECT id, username FROM users WHERE username=?
             """, (target_username,)).fetchone()
 
-            if not target:
+            if requested_permission not in ("read", "edit"):
+                flash("Invalid permission selected.")
+            elif not target:
                 flash("User not found.")
             elif target_username == doc["owner"]:
                 flash("The owner already controls this document.")
@@ -1903,25 +1909,42 @@ def share_document(document_id):
                 conn.execute("""
                     INSERT INTO document_permissions
                     (document_id, username, permission, user_id)
-                    VALUES (?, ?, 'read', ?)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(document_id, username)
                     DO UPDATE SET
-                      permission='read',
-                      user_id=excluded.user_id
-                """, (document_id, target["username"], target["id"]))
+                        permission=excluded.permission,
+                        user_id=excluded.user_id
+                """, (
+                    document_id,
+                    target["username"],
+                    requested_permission,
+                    target["id"],
+                ))
                 conn.commit()
 
                 log_event(
-                    session["username"], "SHARE", document_id,
-                    "Granted read access to " + target_username
+                    session["username"],
+                    "SHARE",
+                    document_id,
+                    "Granted " + requested_permission
+                    + " access to " + target_username,
                 )
-                flash("Read access granted.")
+                flash(
+                    requested_permission.capitalize()
+                    + " access granted successfully."
+                )
+
         except Exception:
             conn.rollback()
             app.logger.exception("Share failed")
             flash("Could not update access.")
         finally:
             conn.close()
+
+        return redirect(url_for(
+            "share_document", document_id=document_id
+        ))
+
 
         return redirect(url_for(
             "share_document", document_id=document_id
@@ -1938,19 +1961,29 @@ def share_document(document_id):
     finally:
         conn.close()
 
-    permission_rows = ""
+        permission_rows = ""
     for item in permissions:
+        permission_label = (
+            "✎ Edit access"
+            if item["permission"] == "edit"
+            else "◉ Read only"
+        )
+
         permission_rows += """
         <tr>
           <td>USER</td>
-          <td><span class="badge blue">◉ Read only</span></td>
+          <td><span class="badge blue">PERMISSION_LABEL</span></td>
           <td>
             <form method="post" action="REVOKE" class="inline">
               <button class="btn btn-danger btn-small">⛨ Revoke</button>
             </form>
           </td>
         </tr>
-        """.replace("USER", item["username"]).replace(
+        """.replace(
+            "USER", item["username"]
+        ).replace(
+            "PERMISSION_LABEL", permission_label
+        ).replace(
             "REVOKE", url_for(
                 "revoke_document",
                 document_id=document_id,
@@ -1965,16 +1998,21 @@ def share_document(document_id):
     <div class="grid" style="grid-template-columns:1fr 1.3fr">
       <div class="card">
         <div class="stat-icon purple">♧</div>
-        <h2>Grant read access</h2>
+        <h2>Grant document access</h2>
         <p>Share this document with an existing account.</p>
         <form method="post">
           <label>DOCUMENT</label>
           <input value="DOCUMENT_NAME" disabled>
           <label>USERNAME</label>
           <input name="username" placeholder="Enter exact username" required>
+                    <label>PERMISSION</label>
+          <select name="permission" required>
+            <option value="read">Read access</option>
+            <option value="edit">Edit access</option>
+          </select>
           <button class="btn btn-primary">♧ Grant Access</button>
         </form>
-        <p class="small">Only read access can be granted through this form.</p>
+        <p class="small">Choose read or edit access for each user.</p>
       </div>
       <div class="card">
         <h2>Access control list</h2>
@@ -2047,6 +2085,98 @@ def revoke_document(document_id, username):
 # --------------------------------------------------
 # DELETE DOCUMENT
 # --------------------------------------------------
+
+
+@app.route("/edit/<int:document_id>", methods=["GET", "POST"])
+@role_required("viewer", "owner", "admin")
+def edit_document(document_id):
+    conn = get_db_connection()
+
+    try:
+        doc = conn.execute(
+            "SELECT * FROM documents WHERE id = ?",
+            (document_id,)
+        ).fetchone()
+
+        if doc is None:
+            abort(404)
+
+        username = session.get("username")
+        role = session.get("role")
+
+        # Only the owner, an admin, or an Edit-permission recipient
+        # may edit document metadata.
+        is_owner = doc["owner"] == username
+        is_admin = role == "admin"
+
+        permission = conn.execute(
+            """
+            SELECT permission
+            FROM document_permissions
+            WHERE document_id = ? AND username = ?
+            """,
+            (document_id, username)
+        ).fetchone()
+
+        has_edit_access = (
+            permission is not None
+            and permission["permission"] == "edit"
+        )
+
+        if not (is_owner or is_admin or has_edit_access):
+            abort(403)
+
+        if request.method == "POST":
+            new_filename = secure_filename(
+                request.form.get("filename", "").strip()
+            )
+            new_category = request.form.get("category", "").strip()
+
+            if not new_filename or not new_category:
+                flash("Filename and category are required.", "error")
+                return render_template(
+                    "edit_document.html", doc=doc
+                )
+
+            # Preserve the file type so existing preview behavior
+            # continues to work.
+            old_ext = os.path.splitext(doc["filename"])[1].lower()
+            new_ext = os.path.splitext(new_filename)[1].lower()
+
+            if old_ext != new_ext:
+                flash(
+                    "Keep the original file extension unchanged.",
+                    "error"
+                )
+                return render_template(
+                    "edit_document.html", doc=doc
+                )
+
+            conn.execute(
+                """
+                UPDATE documents
+                SET filename = ?, category = ?
+                WHERE id = ?
+                """,
+                (new_filename, new_category, document_id)
+            )
+            conn.commit()
+
+            log_event(
+                username,
+                "EDIT",
+                document_id,
+                "Updated document filename and category",
+                "SUCCESS"
+            )
+
+            flash("Document details updated successfully!", "success")
+            return redirect(url_for("edit_document", document_id=document_id))
+
+        return render_template("edit_document.html", doc=doc)
+
+    finally:
+        conn.close()
 
 @app.route("/delete/<int:document_id>", methods=["POST"])
 @login_required
@@ -2332,5 +2462,297 @@ def update_user_status(user_id):    # Only admins can approve or reject accounts
     return redirect(url_for("home"))
 
     return redirect(url_for("home"))
+# ============================================================
+# TRUSTVAULT - DOCUMENT SEARCH AND FILTERS
+# Search by filename, owner, category and upload date
+# ============================================================
+
+@app.route("/document-search", methods=["GET"])
+@login_required
+def document_search():
+    import html
+    from datetime import datetime
+
+    username = session["username"]
+    user_id = session["user_id"]
+    role = session.get("role", "viewer")
+
+    name = request.args.get("name", "").strip()
+    owner = request.args.get("owner", "").strip()
+    category = request.args.get("category", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+
+    error_message = ""
+
+    try:
+        if date_from:
+            datetime.strptime(date_from, "%Y-%m-%d")
+        if date_to:
+            datetime.strptime(date_to, "%Y-%m-%d")
+        if date_from and date_to and date_from > date_to:
+            error_message = "Start date must not be after end date."
+    except ValueError:
+        error_message = "Enter dates in YYYY-MM-DD format."
+
+    docs = []
+
+    if not error_message:
+        conn = get_db_connection()
+        try:
+            query = """
+                SELECT DISTINCT
+                    d.id,
+                    d.filename,
+                    d.owner,
+                    d.category,
+                    d.uploaded_at,
+                    d.owner_id
+                FROM documents d
+                WHERE (
+                    (? = 'admin')
+                    OR d.owner_id = ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM document_permissions p
+                        WHERE p.document_id = d.id
+                          AND p.username = ?
+                          AND p.permission IN ('read', 'edit')
+                    )
+                )
+            """
+            params = [role, user_id, username]
+
+            if name:
+                query += " AND d.filename LIKE ?"
+                params.append("%" + name + "%")
+
+            if owner:
+                query += " AND d.owner LIKE ?"
+                params.append("%" + owner + "%")
+
+            if category:
+                query += " AND LOWER(d.category) = LOWER(?)"
+                params.append(category)
+
+            if date_from:
+                query += " AND date(d.uploaded_at) >= date(?)"
+                params.append(date_from)
+
+            if date_to:
+                query += " AND date(d.uploaded_at) <= date(?)"
+                params.append(date_to)
+
+            query += " ORDER BY d.uploaded_at DESC"
+
+            docs = conn.execute(query, params).fetchall()
+        finally:
+            conn.close()
+
+    def safe(value):
+        return html.escape(str(value or ""))
+
+    result_rows = ""
+
+    for doc in docs:
+        result_rows += """
+        <tr>
+          <td>FILE_NAME</td>
+          <td>OWNER_NAME</td>
+          <td>CATEGORY_NAME</td>
+          <td>UPLOAD_DATE</td>
+          <td>
+            <a class="btn btn-primary"
+               href="DOWNLOAD_URL">Download</a>
+          </td>
+        </tr>
+        """.replace("FILE_NAME", safe(doc["filename"])).replace(
+            "OWNER_NAME", safe(doc["owner"])
+        ).replace(
+            "CATEGORY_NAME", safe(doc["category"])
+        ).replace(
+            "UPLOAD_DATE", safe(doc["uploaded_at"])
+        ).replace(
+            "DOWNLOAD_URL",
+            url_for("download_document", document_id=doc["id"])
+        )
+
+    if not result_rows:
+        result_rows = """
+        <tr>
+          <td colspan="5">No matching documents found.</td>
+        </tr>
+        """
+
+    content = """
+    <div class="card">
+      <h2>Search Documents</h2>
+      <p>Find documents using one or more filters.</p>
+
+      <form method="get" action="/document-search">
+        <label>Document filename</label>
+        <input name="name" value="NAME_VALUE"
+               placeholder="Search by filename">
+
+        <label>Document owner</label>
+        <input name="owner" value="OWNER_VALUE"
+               placeholder="Enter owner username">
+
+        <label>Category</label>
+        <input name="category" value="CATEGORY_VALUE"
+               placeholder="Enter category">
+
+        <div class="grid">
+          <div>
+            <label>Upload date from</label>
+            <input type="date" name="date_from"
+                   value="FROM_VALUE">
+          </div>
+          <div>
+            <label>Upload date to</label>
+            <input type="date" name="date_to"
+                   value="TO_VALUE">
+          </div>
+        </div>
+
+        <br>
+        <button class="btn btn-primary" type="submit">
+          Search Documents
+        </button>
+        <a class="btn" href="/document-search">Clear Filters</a>
+      </form>
+
+      <p>RESULT_COUNT matching documents</p>
+      <p class="small">ERROR_MESSAGE</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Document</th>
+              <th>Owner</th>
+              <th>Category</th>
+              <th>Uploaded</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>RESULT_ROWS</tbody>
+        </table>
+      </div>
+    </div>
+    """.replace("NAME_VALUE", safe(name)).replace(
+        "OWNER_VALUE", safe(owner)
+    ).replace(
+        "CATEGORY_VALUE", safe(category)
+    ).replace(
+        "FROM_VALUE", safe(date_from)
+    ).replace(
+        "TO_VALUE", safe(date_to)
+    ).replace(
+        "RESULT_COUNT", str(len(docs))
+    ).replace(
+        "ERROR_MESSAGE", safe(error_message)
+    ).replace(
+        "RESULT_ROWS", result_rows
+    )
+
+    return render_page(
+        "Document Search",
+        content,
+        active="mydocs",
+        subtitle="Search and filter authorised documents"
+    )
 if __name__ == "__main__":
     app.run(debug=True)
+# ============================================================
+# TRUSTVAULT: DOCUMENT SEARCH AND FILTERS
+# Add at the bottom of app.py
+# ============================================================
+
+from flask import jsonify, request, session, abort
+from datetime import datetime
+
+
+@app.route("/api/document-search", methods=["GET"])
+def trustvault_document_search():
+    # Require an authenticated user
+    if not session.get("username"):
+        abort(401)
+
+    username = session["username"]
+    role = session.get("role", "viewer")
+
+    filename = request.args.get("name", "").strip()
+    owner = request.args.get("owner", "").strip()
+    category = request.args.get("category", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+
+    # Validate ISO dates before querying
+    try:
+        if date_from:
+            datetime.strptime(date_from, "%Y-%m-%d")
+        if date_to:
+            datetime.strptime(date_to, "%Y-%m-%d")
+        if date_from and date_to and date_from > date_to:
+            return jsonify({"error": "Start date must not exceed end date"}), 400
+    except ValueError:
+        return jsonify({"error": "Dates must use YYYY-MM-DD format"}), 400
+
+    conn = get_db_connection()
+
+    try:
+        # Only return documents the current user is authorised to access.
+        # Owners see their own documents; admins can search all documents;
+        # viewers see only documents explicitly shared with them.
+        query = """
+            SELECT DISTINCT
+                d.id,
+                d.filename,
+                d.category,
+                d.owner,
+                d.uploaded_at
+            FROM documents d
+            LEFT JOIN document_permissions p
+                ON p.document_id = d.id
+                AND p.username = ?
+            WHERE (
+                (? = 'admin')
+                OR d.owner = ?
+                OR p.permission IN ('read', 'edit')
+            )
+        """
+
+        params = [username, role, username]
+
+        if filename:
+            query += " AND d.filename LIKE ?"
+            params.append("%" + filename + "%")
+
+        if owner:
+            query += " AND d.owner LIKE ?"
+            params.append("%" + owner + "%")
+
+        if category:
+            query += " AND d.category = ?"
+            params.append(category)
+
+        if date_from:
+            query += " AND date(d.uploaded_at) >= date(?)"
+            params.append(date_from)
+
+        if date_to:
+            query += " AND date(d.uploaded_at) <= date(?)"
+            params.append(date_to)
+
+        query += " ORDER BY d.uploaded_at DESC"
+
+        rows = conn.execute(query, params).fetchall()
+
+        return jsonify({
+            "count": len(rows),
+            "documents": [dict(row) for row in rows]
+        })
+
+    finally:
+        conn.close()

@@ -1058,6 +1058,40 @@ def test_owner_can_grant_read_access(isolated_app):
 
     assert permission is not None
     assert permission["permission"] == "read"
+
+def test_owner_can_grant_edit_access(isolated_app):
+    """An owner can grant edit permission and it is stored correctly."""
+    client = isolated_app.test_client()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/share/1",
+        data={"username": "test_admin", "permission": "edit"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+
+    conn = trustvault.get_db_connection()
+    try:
+        permission = conn.execute(
+            """
+            SELECT permission
+            FROM document_permissions
+            WHERE document_id = ? AND username = ?
+            """,
+            (1, "test_admin"),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert permission is not None
+    assert permission["permission"] == "edit"
+
 def test_owner_cannot_share_with_nonexistent_user(isolated_app):
     """Sharing with an unknown username must not create a permission."""
     client = isolated_app.test_client()
@@ -1309,7 +1343,34 @@ def test_owner_can_preview_valid_pdf_with_security_headers(
 
 
 
+
+def test_direct_view_and_preview_require_permission(isolated_app):
     """Direct view and PDF preview URLs must enforce document permissions."""
+    client = isolated_app.test_client()
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            DELETE FROM document_permissions
+            WHERE document_id = ? AND username = ?
+            """,
+            (1, "test_viewer"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    view_response = client.get("/view/1")
+    preview_response = client.get("/preview-pdf/1")
+
+    assert view_response.status_code == 403
+    assert preview_response.status_code == 403
     client = isolated_app.test_client()
 
     # Remove the viewer's existing read permission in the test database.
@@ -1882,3 +1943,479 @@ def test_successful_registration_creates_pending_viewer(isolated_app):
     assert user["role"] == "viewer"
     assert user["account_status"] == "pending"
     assert user["password_hash"] != "StrongPass123!"
+
+
+def test_owner_can_delete_own_local_document(isolated_app, tmp_path, monkeypatch):
+    """The owner can delete their document and its database record."""
+    client = isolated_app.test_client()
+
+    stored_file = tmp_path / "sample.txt"
+    stored_file.write_text("TrustVault test document", encoding="utf-8")
+
+    monkeypatch.setattr(
+        trustvault,
+        "UPLOAD_FOLDER",
+        str(tmp_path),
+    )
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post("/delete/1", follow_redirects=False)
+
+    assert response.status_code in (302, 303)
+    assert not stored_file.exists()
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT id FROM documents WHERE id = ?", (1,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert document is None
+
+
+def test_owner_delete_failure_preserves_database_record(
+    isolated_app, tmp_path, monkeypatch
+):
+    """A storage deletion failure must not remove the database record."""
+    client = isolated_app.test_client()
+
+    monkeypatch.setattr(
+        trustvault,
+        "UPLOAD_FOLDER",
+        str(tmp_path),
+    )
+
+    # Simulate an operating-system error while deleting the local file.
+    def fail_remove(path):
+        raise OSError("Simulated storage deletion failure")
+
+    monkeypatch.setattr(trustvault.os, "remove", fail_remove)
+
+    stored_file = tmp_path / "sample.txt"
+    stored_file.write_text("TrustVault test document", encoding="utf-8")
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post("/delete/1", follow_redirects=False)
+
+    assert response.status_code in (302, 303)
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT id FROM documents WHERE id = ?", (1,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert document is not None
+    assert stored_file.exists()
+
+def test_upload_rejects_request_without_file(isolated_app):
+    """Uploading without selecting a file must not create a document."""
+    client = isolated_app.test_client()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    conn = trustvault.get_db_connection()
+    try:
+        before_count = conn.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    response = client.post(
+        "/upload",
+        data={},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+
+    conn = trustvault.get_db_connection()
+    try:
+        after_count = conn.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert after_count == before_count
+def test_owner_cannot_share_another_owners_document(isolated_app):
+    """An owner cannot grant access to another owner's document."""
+    client = isolated_app.test_client()
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET owner_id = ? WHERE id = ?",
+            (3, 1),
+        )
+        conn.commit()
+
+        before_count = conn.execute(
+            "SELECT COUNT(*) FROM document_permissions "
+            "WHERE document_id = ? AND username = ?",
+            (1, "test_viewer"),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/share/1",
+        data={"username": "test_viewer"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+    conn = trustvault.get_db_connection()
+    try:
+        after_count = conn.execute(
+            "SELECT COUNT(*) FROM document_permissions "
+            "WHERE document_id = ? AND username = ?",
+            (1, "test_viewer"),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert after_count == before_count
+
+
+def test_owner_cannot_revoke_access_from_another_owners_document(
+    isolated_app,
+):
+    """An owner cannot revoke access to another owner's document."""
+    client = isolated_app.test_client()
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET owner_id = ? WHERE id = ?",
+            (3, 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/revoke/1/test_viewer",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+    conn = trustvault.get_db_connection()
+    try:
+        permission = conn.execute(
+            "SELECT permission FROM document_permissions "
+            "WHERE document_id = ? AND username = ?",
+            (1, "test_viewer"),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert permission is not None
+
+def test_owner_can_download_document_from_mock_s3(
+    isolated_app, monkeypatch
+):
+    """An authorized owner can download a document from mocked S3."""
+    import hashlib
+    import io
+
+    client = isolated_app.test_client()
+    content = b"TrustVault private S3 document"
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE documents
+            SET storage_backend = 's3',
+                stored_filename = 'private/sample.txt',
+                sha256 = ?
+            WHERE id = 1
+            """,
+            (hashlib.sha256(content).hexdigest(),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class FakeS3:
+        def get_object(self, **kwargs):
+            assert kwargs["Bucket"] == trustvault.S3_BUCKET
+            assert kwargs["Key"] == "private/sample.txt"
+            return {
+                "Body": io.BytesIO(content),
+                "ContentType": "text/plain",
+            }
+
+    monkeypatch.setattr(trustvault, "s3_client", FakeS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.get("/download/1")
+
+    assert response.status_code == 200
+    assert response.data == content
+    assert "attachment" in response.headers["Content-Disposition"]
+
+
+def test_s3_download_rejects_wrong_sha256(
+    isolated_app, monkeypatch
+):
+    """S3 content that fails the SHA-256 check must be rejected."""
+    import hashlib
+    import io
+
+    client = isolated_app.test_client()
+    actual_content = b"Altered document content"
+    expected_hash = hashlib.sha256(
+        b"Original document content"
+    ).hexdigest()
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE documents
+            SET storage_backend = 's3',
+                stored_filename = 'private/sample.txt',
+                sha256 = ?
+            WHERE id = 1
+            """,
+            (expected_hash,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class FakeS3:
+        def get_object(self, **kwargs):
+            return {
+                "Body": io.BytesIO(actual_content),
+                "ContentType": "text/plain",
+            }
+
+    monkeypatch.setattr(trustvault, "s3_client", FakeS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.get("/download/1")
+
+    assert response.status_code == 409
+
+
+def test_s3_download_returns_404_when_object_is_unavailable(
+    isolated_app, monkeypatch
+):
+    """An S3 ClientError must not expose a missing object."""
+    from botocore.exceptions import ClientError
+
+    client = isolated_app.test_client()
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE documents
+            SET storage_backend = 's3',
+                stored_filename = 'private/missing.txt'
+            WHERE id = 1
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class FailingS3:
+        def get_object(self, **kwargs):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "NoSuchKey",
+                        "Message": "Object not found",
+                    }
+                },
+                "GetObject",
+            )
+
+    monkeypatch.setattr(trustvault, "s3_client", FailingS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.get("/download/1")
+
+    assert response.status_code == 404
+
+
+def test_s3_delete_failure_preserves_database_record(
+    isolated_app, monkeypatch
+):
+    """If S3 deletion fails, preserve the document database record."""
+    from botocore.exceptions import ClientError
+
+    client = isolated_app.test_client()
+    attempted_deletions = []
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE documents
+            SET storage_backend = 's3',
+                stored_filename = 'private/sample.txt'
+            WHERE id = 1
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class FailingS3:
+        def delete_object(self, **kwargs):
+            attempted_deletions.append(kwargs)
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "AccessDenied",
+                        "Message": "Simulated S3 deletion failure",
+                    }
+                },
+                "DeleteObject",
+            )
+
+    monkeypatch.setattr(trustvault, "s3_client", FailingS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post("/delete/1", follow_redirects=False)
+
+    assert response.status_code in (302, 303)
+    assert len(attempted_deletions) == 1
+    assert attempted_deletions[0]["Bucket"] == trustvault.S3_BUCKET
+    assert attempted_deletions[0]["Key"] == "private/sample.txt"
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT id FROM documents WHERE id = ?", (1,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert document is not None
+
+
+def test_sharing_same_document_twice_does_not_create_duplicate_permissions(
+    isolated_app,
+):
+    """Sharing twice should keep one permission and preserve read access."""
+    client = isolated_app.test_client()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    # Grant access for the first time.
+    first_response = client.post(
+        "/share/1",
+        data={"username": "test_viewer"},
+        follow_redirects=False,
+    )
+    assert first_response.status_code in (302, 303)
+
+    # Grant access to the same user again.
+    second_response = client.post(
+        "/share/1",
+        data={"username": "test_viewer"},
+        follow_redirects=False,
+    )
+    assert second_response.status_code in (302, 303)
+
+    conn = trustvault.get_db_connection()
+    try:
+        permissions = conn.execute(
+            """
+            SELECT permission
+            FROM document_permissions
+            WHERE document_id = ? AND username = ?
+            """,
+            (1, "test_viewer"),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(permissions) == 1
+    assert permissions[0]["permission"] == "read"
+
+def test_owner_cannot_grant_invalid_permission(isolated_app):
+    """Invalid permission values must not be stored."""
+    client = isolated_app.test_client()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/share/1",
+        data={"username": "test_admin", "permission": "admin"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 303)
+
+    conn = trustvault.get_db_connection()
+    try:
+        permission = conn.execute(
+            """
+            SELECT permission
+            FROM document_permissions
+            WHERE document_id = ? AND username = ?
+            """,
+            (1, "test_admin"),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert permission is None
+
