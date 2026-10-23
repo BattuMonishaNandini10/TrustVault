@@ -1,93 +1,220 @@
-# TrustVault Threat Model
+# TrustVault — Threat Model
 
-## 1. Purpose
+## 1. Project Overview
 
-TrustVault is designed to share documents securely between authorized users. The main security objective is to prevent unauthorized document access and maintain useful records of document activity.
+TrustVault is a Python Flask web application for securely uploading, organizing, sharing, and accessing documents. It uses role-based access control, document-level permissions, permission revocation, and audit logging.
 
-This document identifies important threats, intended mitigations, and checks required before claiming that a threat is addressed.
+The main security objective is to ensure that users can access only the documents and actions they are authorized to use, and that important activity is recorded for review.
+
+**Deployment:** http://3.91.27.213/  
+**Source code:** https://github.com/BattuMonishaNandini10/TrustVault
+
+**Important deployment note:** The live URL uses HTTP. Traffic is not protected by HTTPS, so credentials and document contents may be exposed in transit. Do not upload real sensitive documents to this deployment.
 
 ## 2. Assets to Protect
 
-- Uploaded documents and their contents
-- User accounts and password hashes
-- Document ownership and sharing permissions
-- Session cookies and application secrets
-- Audit records
-- Document integrity hashes
-- Database contents and deployment configuration
+| Asset | Why it matters |
+|---|---|
+| User accounts and passwords | Prevent account takeover and unauthorized access |
+| Uploaded documents | Protect confidentiality and integrity |
+| Document permissions | Ensure only authorized users can access shared files |
+| Permission and ownership records | Prevent unauthorized sharing or changes |
+| Audit logs | Help investigate access and security incidents |
+| Application configuration and secrets | Prevent unauthorized access to the application and its services |
+| AWS resources and credentials | Prevent unauthorized cloud access and data exposure |
 
-## 3. Security Assumptions
+## 3. Threat Actors
 
-- Users may attempt to access documents belonging to other users.
-- An authenticated user may attempt to exceed their assigned role.
-- Sharing links and document identifiers may be guessed or modified.
-- Uploaded files may be malicious or malformed.
-- Access permissions may be revoked after being granted.
-- Administrators and deployment environments must also be protected.
-- Application logs and database files may contain sensitive information.
+Potential threat actors include:
 
-## 4. Threats and Mitigations
+- An authenticated user attempting to access another user's documents.
+- A viewer attempting to perform owner or administrator actions.
+- A former recipient attempting to access a document after permission revocation.
+- An unauthenticated visitor attempting to access protected routes or files.
+- An attacker submitting malicious, oversized, or incorrectly formatted uploads.
+- A user attempting to manipulate document identifiers, URLs, or request parameters.
+- An attacker who obtains credentials, application secrets, or access to the server.
+- A malicious or compromised administrator who misuses privileged access.
 
-| ID | Threat | Intended mitigation | Verification required |
-|---|---|---|---|
-| T1 | Insecure direct object reference (IDOR) | Check the current user's permission for every document request | Test access using another user's document ID |
-| T2 | Unauthorized route access | Apply server-side authentication and role checks | Test protected routes for each role |
-| T3 | Access after revocation | Check current permissions when a document is requested | Revoke access and retry the request |
-| T4 | Sharing with the wrong user | Validate the intended recipient and show clear sharing information | Test recipient validation and grants |
-| T5 | Privilege escalation | Enforce role permissions on the server, not only in the interface | Attempt restricted actions as a viewer |
-| T6 | Missing audit events | Record relevant successful and denied security actions | Verify expected audit entries |
-| T7 | Audit record tampering | Restrict access to audit data and separate administrative permissions | Test unauthorized audit modification |
-| T8 | Malicious file upload | Validate file types and sizes; treat uploaded files as untrusted | Test disallowed extensions and oversized files |
-| T9 | Direct storage exposure | Store private files outside public static directories | Attempt unauthenticated direct file access |
-| T10 | Metadata disclosure | Restrict document listings and search results to authorized records | Test listing and search as another user |
-| T11 | Session misuse | Use secure session settings and proper logout/session handling | Test session expiry and cookie settings |
-| T12 | Cross-site request forgery (CSRF) | Protect state-changing requests with CSRF defenses | Test unauthorized cross-origin requests |
-| T13 | SQL injection | Use parameterized database queries | Review queries and test hostile input |
-| T14 | Permission race conditions | Recheck permissions at access time and handle concurrent changes carefully | Test access around revocation |
-| T15 | Secrets or private data in Git | Exclude secrets, private uploads, and sensitive database files from the repository | Review current files and Git history |
+## 4. Main Threats and Mitigations
 
-## 5. Security Principles
+### Threat 1: Unauthorized document access
 
-### Least privilege
-Each role should have only the permissions needed for its intended tasks.
+**Risk:** A user changes a document ID in a URL or sends a direct request to download another user's document.
 
-### Server-side authorization
-Hiding a button or link is not a security control. Protected actions must enforce authorization on the server.
+**Potential impact:** Confidential documents may be disclosed.
 
-### Default deny
-Requests should be rejected unless the application can establish that the user is authorized.
+**Mitigations:**
+- Require authentication for protected operations.
+- Check document ownership or explicit sharing permissions on the server.
+- Apply authorization checks to document access and download routes.
+- Test unauthorized access using different demo accounts.
 
-### Auditability
-Security-relevant actions should produce meaningful audit records, including the actor, action, time, target, and outcome where applicable.
+**Residual risk:** A missing authorization check in any route could expose documents. Every route that reads, downloads, edits, deletes, or shares a document must be checked and tested.
 
-### Private storage
-Uploaded documents must not become publicly accessible merely because a user knows a filename or URL.
+### Threat 2: Privilege escalation between roles
 
-## 6. Verification Plan
+**Risk:** A viewer attempts to perform owner or administrator operations by directly requesting a protected URL.
 
-Before submission, verify the following:
+**Potential impact:** Unauthorized document management, permission changes, or access to audit records.
 
-- [ ] An unauthenticated user cannot access protected documents.
-- [ ] A viewer cannot access an unshared document by changing its ID.
-- [ ] Revoked permissions no longer allow document access.
-- [ ] Viewers cannot perform owner-only or admin-only actions.
-- [ ] Unauthorized audit access is denied.
-- [ ] Invalid and oversized uploads are rejected.
-- [ ] Audit events are recorded for relevant actions.
-- [ ] Automated security tests use an isolated test database.
-- [ ] The repository contains no secrets or confidential user documents.
-- [ ] The deployed application has been tested using the documented demo roles.
+**Mitigations:**
+- Use server-side role checks for privileged routes.
+- Restrict administrative functions to authorized roles.
+- Test direct requests as owner, viewer, and administrator accounts.
 
-## 7. Residual Risks
+**Residual risk:** Role checks may be inconsistent across routes unless the complete route set is reviewed and tested.
 
-The threat model does not prove that the application is secure. Remaining risks depend on the actual implementation, deployment configuration, testing coverage, and operational controls.
+### Threat 3: Unauthorized sharing or permission changes
 
-Controls must be marked verified only after the corresponding code, test results, or deployment settings have been reviewed.
+**Risk:** A user grants access to a document they do not own, changes another user's permissions, or shares a document with an unintended recipient.
 
-## 8. Incident Response
+**Potential impact:** Unauthorized disclosure or loss of control over documents.
 
-If a credential is exposed, revoke or rotate it immediately. If unauthorized document access is suspected, preserve relevant audit records, restrict affected access, investigate the incident, and rotate any potentially compromised credentials.
+**Mitigations:**
+- Verify the acting user's authority before changing permissions.
+- Associate permissions with individual documents and recipients.
+- Restrict permission grants and revocations to authorized users.
+- Record permission changes in the audit log.
 
-## 9. Review Status
+**Residual risk:** Incorrect database relationships or missing checks could still allow unintended sharing.
 
-This document is a threat assessment and verification plan. It must be updated to reflect the actual application, observed test results, and any unresolved vulnerabilities before final submission.
+### Threat 4: Access after permission revocation
+
+**Risk:** A former recipient continues accessing a document after their permission is revoked.
+
+**Potential impact:** Continued unauthorized access.
+
+**Mitigations:**
+- Check current permissions when a document is requested.
+- Revoke the corresponding document-sharing permission.
+- Test access again after revocation, including direct download requests.
+
+**Residual risk:** Revocation cannot undo a file that was already downloaded or copied. Cached copies and previously disclosed content may remain outside the application's control.
+
+### Threat 5: Malicious file uploads
+
+**Risk:** An attacker uploads a file with a misleading extension, an unsupported format, or an excessive size.
+
+**Potential impact:** Storage exhaustion, exposure to malicious content, or possible exploitation of software that processes uploaded files.
+
+**Mitigations:**
+- Restrict allowed file extensions.
+- Enforce an upload-size limit.
+- Store uploaded files separately from application templates and source code.
+- Avoid trusting the submitted filename as a safe storage path.
+
+**Residual risk:** Extension checks alone do not establish that a file's actual contents are safe. Content validation, malware scanning, and safe handling of downloaded files require additional review.
+
+### Threat 6: Document tampering or corruption
+
+**Risk:** A stored file is altered or corrupted without the application detecting the change.
+
+**Potential impact:** Users may receive modified or damaged documents.
+
+**Mitigations:**
+- Use SHA-256 hashes to check file integrity where implemented.
+- Compare the stored expected hash with the hash of the retrieved file.
+- Record detected integrity failures in the audit log where implemented.
+
+**Residual risk:** A hash check detects changes only when the expected hash is trustworthy and the check is actually performed. SHA-256 alone does not prevent tampering, and it does not make audit logs tamper-proof.
+
+### Threat 7: Missing or misleading audit records
+
+**Risk:** Important actions or denied access attempts are not logged, or someone modifies or deletes the records.
+
+**Potential impact:** Investigations become incomplete or unreliable.
+
+**Mitigations:**
+- Record important activities such as uploads, downloads, document changes, deletions, and permission changes where implemented.
+- Record denied operations where implemented.
+- Restrict access to administrative audit views.
+
+**Residual risk:** Application-level logs may be incomplete or modifiable by someone with sufficient database or server access. Independent, tamper-resistant audit storage is not claimed unless separately implemented and verified.
+
+### Threat 8: Credential theft and weak session security
+
+**Risk:** An attacker obtains a user's password or steals a session.
+
+**Potential impact:** Unauthorized access under that user's identity.
+
+**Mitigations:**
+- Use password hashing rather than storing plaintext passwords.
+- Protect authenticated routes.
+- Keep application secrets out of publicly committed source code.
+
+**Residual risk:** Password hashing does not prevent phishing, weak passwords, session theft, or compromised credentials. HTTPS is not currently verified for the public deployment, making traffic interception a significant risk.
+
+### Threat 9: Exposure of AWS resources or secrets
+
+**Risk:** AWS credentials, overly permissive IAM policies, public storage settings, or exposed application secrets allow unauthorized cloud access.
+
+**Potential impact:** Document disclosure, resource misuse, or unexpected costs.
+
+**Mitigations:**
+- Use narrowly scoped IAM permissions.
+- Keep credentials and secrets out of Git.
+- Review S3 bucket access policies and public-access settings.
+- Review CloudWatch logs for accidental exposure of sensitive information.
+
+**Residual risk:** The actual AWS configuration must be checked in the AWS Console. The use of AWS services alone does not guarantee secure configuration.
+
+### Threat 10: Denial of service
+
+**Risk:** Repeated requests or oversized uploads consume server resources.
+
+**Potential impact:** The application becomes slow or unavailable.
+
+**Mitigations:**
+- Enforce an upload-size limit.
+- Validate incoming requests.
+- Monitor server health and application errors.
+
+**Residual risk:** Rate limiting, resource quotas, and comprehensive abuse monitoring may require additional implementation and verification.
+
+## 5. Security Testing Plan
+
+The following tests should be run against an isolated test database and, where appropriate, the deployed application:
+
+- Verify that unauthenticated users cannot access protected documents.
+- Verify that a viewer cannot access documents without permission.
+- Verify that a viewer cannot access owner-only or administrator-only routes.
+- Verify that document permissions are checked on direct download requests.
+- Verify that revoking permission blocks subsequent requests.
+- Verify that unauthorized users cannot edit or delete another user's documents.
+- Verify that upload extension and size restrictions work.
+- Verify that audit records are generated for important allowed and denied actions.
+- Verify that integrity checks detect changes to stored files.
+- Verify that secrets and sensitive document contents are not accidentally exposed in logs or the public repository.
+
+Automated tests should use a separate temporary database so that tests cannot damage real application data.
+
+## 6. Accepted Risks and Limitations
+
+The following limitations must be considered before using TrustVault for real sensitive information:
+
+1. **HTTP deployment:** The current public URL does not provide verified HTTPS protection.
+2. **Previously downloaded files:** Revoking access cannot erase copies a recipient has already downloaded.
+3. **Audit-log integrity:** Application-level audit records are not assumed to be tamper-proof.
+4. **File validation:** Extension and size checks do not replace comprehensive content inspection or malware scanning.
+5. **Cloud configuration:** AWS IAM, S3 access controls, secret handling, and logging configuration require verification.
+6. **Operational security:** Backups, disaster recovery, incident response, rate limiting, and production monitoring may require additional work.
+7. **Security assurance:** Passing automated tests does not prove that every possible attack has been prevented.
+
+These are known risks or areas requiring verification, not claims that every listed mitigation has already been fully implemented.
+
+## 7. Future Improvements
+
+- Configure and verify HTTPS using a suitable domain and certificate.
+- Add stronger upload-content validation and malware scanning.
+- Send security-critical audit records to a separately protected logging destination.
+- Review IAM policies and S3 bucket settings using least privilege.
+- Add rate limiting and monitoring for suspicious activity.
+- Perform a route-by-route authorization review and additional adversarial tests.
+- Document backup, recovery, and incident-response procedures.
+
+## 8. Conclusion
+
+TrustVault is designed around authentication, role-based authorization, document-level permissions, revocation, file integrity checks, and audit logging. Its security depends on correctly enforcing authorization on every relevant route, safely configuring the deployment, and verifying the behavior with automated and manual tests.
+
+This threat model documents the intended protections and remaining risks. It is not a certification that the application is production-secure.
