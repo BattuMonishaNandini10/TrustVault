@@ -1,124 +1,89 @@
-# TrustVault — Project Write-up
+# TrustVault API Documentation
 
-## 1. Project Overview
+## 1. Overview
 
-TrustVault is a secure document-sharing application developed for the Snovasys Fresher Hiring Challenge 2026.
+TrustVault is a Flask-based secure document-sharing application. Its routes support authentication, document management, sharing, permission revocation, and audit review.
 
-The goal is to let authorized users share documents while preventing unauthorized access and maintaining an audit trail of relevant actions.
+**Live deployment:** http://3.91.27.213/  
+**Repository:** https://github.com/BattuMonishaNandini10/TrustVault
 
-The project focuses on three security requirements:
+**Security note:** The live deployment uses HTTP, not verified HTTPS. Do not upload real sensitive documents.
 
-1. Only authorized users should be able to access a document.
-2. Sharing permissions should be controllable and revocable.
-3. Document-related activity should be auditable.
+## 2. Authentication and Roles
 
-## 2. Architecture
+TrustVault uses authenticated user sessions and role-based authorization.
 
-The intended application architecture consists of:
-
-- **User interface:** HTML templates rendered by Flask.
-- **Application layer:** Python and Flask routes for authentication, document management, sharing, and audit functionality.
-- **Authentication:** Flask-Login and password hashing.
-- **Authorization:** Role-based and document-level permission checks.
-- **Database:** SQLite for application records.
-- **File storage:** Private document storage.
-- **Integrity checking:** SHA-256 hashes for checking file integrity.
-- **Deployment:** AWS EC2, subject to verification of the live configuration.
-
-The browser sends requests to the Flask application. The application authenticates the user, checks permissions, performs authorized operations, and returns the appropriate response.
-
-## 3. Security Design Decisions
-
-### Authentication
-
-Users must authenticate before accessing protected functionality. Passwords should be stored as secure hashes rather than plaintext.
-
-### Authorization
-
-Authorization must be enforced on the server. A user interface that hides restricted links is not sufficient.
-
-### Document sharing
-
-Document access should depend on the current user's ownership or valid sharing permissions. Revoked access must be rejected by subsequent protected requests.
-
-### Audit trail
-
-Relevant security events should record the actor, action, target, timestamp, and outcome where applicable.
-
-### File integrity
-
-SHA-256 can be used to compare a stored file hash with the hash calculated from retrieved file contents. This detects mismatches but does not, by itself, prove who uploaded a file or prevent every form of tampering.
-
-## 4. AWS Deployment
-
-The application has been prepared for deployment on an AWS EC2 instance.
-
-The final submission should identify only the services actually used and verified.
-
-| Component | Purpose |
+| Role | Intended access |
 |---|---|
-| AWS EC2 | Host the application server |
-| Gunicorn | Serve the Flask application as a production WSGI process, if confirmed in the deployed configuration |
-| Nginx | Act as a reverse proxy, if confirmed in the deployed configuration |
-| SQLite | Store application data on the configured host |
+| Owner | Manage owned documents and their sharing permissions |
+| Viewer | Access documents explicitly shared with them, subject to current permissions |
+| Admin | Access authorized administrative functions and audit records |
 
-No AWS service should be described as integrated unless the implementation and configuration demonstrate that integration.
+A user's role alone should not grant access to every document. Document-level authorization must be checked for each protected operation.
 
-The final deployment documentation must include the verified live URL, setup steps, required environment variables, and any relevant network configuration.
+## 3. Route Reference
 
-## 5. Testing Strategy
+The following routes are based on the project routes identified during development. Confirm the HTTP methods and behavior against `app.py`.
 
-The testing strategy should cover:
+| Route | Expected access | Purpose |
+|---|---|---|
+| `/` | Public or authenticated, depending on implementation | Home page |
+| `/login` | Public | Sign in |
+| `/logout` | Authenticated | Sign out |
+| `/upload` | Authorized users | Upload a document |
+| `/documents` | Authorized users | View documents the user is allowed to manage |
+| `/share/<document_id>` | Authorized document owner | Grant document access |
+| `/shared` | Authenticated users | View documents shared with the current user |
+| `/admin/audit` | Admin or other explicitly authorized roles | Review audit records |
 
-- Login and logout
-- Owner, viewer, and admin permissions
-- Access to owned documents
-- Access to documents shared with a recipient
-- Denial of access to unrelated users
-- Revocation of sharing permissions
-- Restricted administrative routes
-- Audit logging
-- Invalid and oversized uploads
-- File integrity verification
+**Important:** This table is not a substitute for checking the actual route decorators and methods. Add any edit, download, delete, search, permission-revocation, and other routes that exist in the application.
 
-Automated tests should use an isolated test database and must detect the removal of the relevant authorization checks.
+## 4. Authorization Requirements
 
-Test results must be reported only after the tests have actually been run.
+Every sensitive request should enforce authorization on the server.
 
-## 6. AI Assistance
+- **Authentication:** Unauthenticated users must not access protected operations.
+- **Document access:** The server must check ownership or an active sharing permission before returning document contents.
+- **Download:** A direct download request must perform the same access checks as the document listing page.
+- **Editing and deletion:** Only users explicitly authorized for the requested action may modify or delete a document.
+- **Sharing:** Only an authorized document owner or other explicitly permitted role may grant access.
+- **Revocation:** Once permission is revoked, subsequent requests must deny access unless another valid permission exists.
+- **Administration:** Administrative routes must enforce the required role server-side.
+- **Audit records:** Access to audit information must be restricted to authorized users.
 
-AI assistance was used for project planning, understanding Flask functionality, debugging errors, developing test ideas, and preparing documentation.
+## 5. Error Responses
 
-AI output was treated as a starting point rather than a guarantee of correctness. Suggested code and security controls required review and testing.
+Actual responses depend on the route and Flask error handlers. Verify these behaviors during testing.
 
-The AI prompt log should document actual prompts, useful outputs, specific issues discovered, fixes applied, and links to the relevant commits.
+| Status | Meaning |
+|---|---|
+| `200 OK` | Request succeeded |
+| `302 Found` | Redirect, commonly used in login flows |
+| `400 Bad Request` | Invalid request |
+| `401 Unauthorized` | Authentication is required or invalid |
+| `403 Forbidden` | The user is not permitted to perform the action |
+| `404 Not Found` | Resource or route was not found |
+| `413 Content Too Large` | Upload exceeds the configured size limit |
+| `500 Internal Server Error` | Unexpected server-side failure |
 
-## 7. Challenges and Lessons Learned
+Where appropriate, the application may return a generic not-found response instead of revealing whether an inaccessible document exists.
 
-The development process involved understanding route permissions, debugging application errors, testing the owner/viewer/admin workflows, and reviewing access-control behavior.
+## 6. Security Testing
 
-A key lesson is that successful login does not mean a user is authorized to access every document. Authorization must be checked for each protected operation.
+Test the routes with separate owner, viewer, and admin accounts.
 
-Another lesson is that a security feature is not proven merely because it appears in the interface. It must be verified using appropriate tests.
+1. Verify that unauthenticated requests cannot access protected documents.
+2. Verify that a viewer cannot access a document that has not been shared with them.
+3. Attempt direct downloads by changing document IDs.
+4. Verify that revoking permission blocks subsequent document requests.
+5. Verify that unauthorized edit and delete requests are denied.
+6. Verify that only authorized roles can access administrative audit routes.
+7. Verify that denied attempts are recorded where audit logging is implemented.
 
-## 8. Known Limitations
+Run automated tests against an isolated test database rather than the production database.
 
-The final submission must explicitly identify:
+## 7. Limitations
 
-- Security controls that have not been tested
-- Automated tests that have not passed
-- Deployment settings that remain unverified
-- Any unfinished features
-- Any limitations in audit integrity or operational monitoring
+This document must be reconciled with the final application before submission. Route methods, request parameters, response formats, and error handling should be documented only after checking the implementation.
 
-These limitations should be updated after the final repository and deployment review.
-
-## 9. Conclusion
-
-TrustVault aims to demonstrate secure document sharing through authentication, least-privilege authorization, revocable permissions, file integrity checks, and auditability.
-
-The quality of the final submission depends on matching the documentation to the actual implementation and providing evidence that the security controls work.
-
-## Challenge
-
-Snovasys Fresher Hiring Challenge 2026
+The existence of a route does not prove that its authorization checks are correct. Automated and manual tests should confirm the actual behavior.
