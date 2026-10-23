@@ -21,7 +21,7 @@ TrustVault is a web application designed to help users share documents securely.
 - **Database:** SQLite
 - **Authentication:** Flask-Login and password hashing
 - **File integrity:** SHA-256
-- **Deployment:** AWS EC2, with the deployment configuration documented as verified
+- **Deployment:**AWS EC2, with the deployment configuration documented as verified
 - **Testing:** Pytest
 
 ## Roles and Permissions
