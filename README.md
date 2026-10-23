@@ -96,3 +96,24 @@ The final submission will explicitly list any features, tests, or deployment con
 ## Author
 
 Created for the Snovasys Fresher Hiring Challenge 2026.
+
+## Known Limitations, Mistakes and Lessons Learned
+
+TrustVault is a hiring-challenge project and is not yet a production-ready document management system.
+
+### Known limitations
+
+- **HTTPS:** The current demo uses HTTP. Trusted HTTPS has not yet been configured and verified.
+- **Audit protection:** Audit events are recorded by the application, but tamper-resistant storage and independent verification of the audit trail must not be assumed unless explicitly implemented and tested.
+- **Security verification:** Passing automated tests does not prove the absence of every authorization vulnerability. Further adversarial testing is needed against the deployed application.
+- **Deployment verification:** Local test results do not automatically establish that every security control behaves identically on the live AWS deployment.
+
+### Mistakes and corrective work
+
+During development, I encountered and corrected application routing, role-access, and code-structure issues. I used automated tests to help identify regressions and verify access-control behavior.
+
+I will document specific AI-generated mistakes, the evidence used to identify them, the corrections made, and the associated commits in `PROMPTS.md`. Threat scenarios, mitigations, and accepted risks are documented in `THREATS.md`.
+
+### What remains unfinished
+
+I will distinguish features that are implemented and tested from those that are only partially implemented or not yet independently verified. I will not describe the application as fully secure or production-ready without sufficient evidence.
