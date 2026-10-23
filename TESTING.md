@@ -1,52 +1,121 @@
-# TrustVault — Testing
+# TrustVault — Testing Guide
 
 ## 1. Purpose
 
-TrustVault uses automated tests and manual checks to verify authentication, role-based access control, document permissions, and audit-related security behavior.
+TrustVault uses automated and manual testing to check document authorization, role restrictions, sharing, permission revocation, file handling, and audit behavior.
 
-## 2. Automated Security Tests
+Security tests are important because a document must remain protected even when a user bypasses the normal interface and sends a direct request.
 
-The security test suite is located in `tests/test_security.py`.
+## 2. Test Environment
 
-The tests should use an isolated temporary SQLite database so that testing does not modify the application's actual database.
+Run tests in a local development environment with Python and the project's dependencies installed.
 
-Important security scenarios to test:
+From the project directory, activate the virtual environment and install the dependencies listed in `requirements.txt`, if present.
 
-- Unauthenticated users cannot access protected document routes.
-- A user cannot access another user's private documents without permission.
-- Shared documents are accessible only to authorized recipients.
-- Revoked sharing permissions no longer allow access.
-- Viewer, owner, and admin permissions are enforced correctly.
-- Unauthorized access attempts are handled safely.
-- Audit events are recorded for security-relevant actions.
+```bash
+python -m pytest -q
+```
 
-## 3. Manual Verification Checklist
+Run the security test module separately:
 
-- [ ] Log in and log out successfully.
-- [ ] Upload a test document.
-- [ ] Confirm the document owner can see their document.
-- [ ] Share a document with an authorized test account.
-- [ ] Confirm the recipient can access the shared document.
-- [ ] Revoke access and verify the recipient can no longer access it.
-- [ ] Verify unauthorized users cannot access protected routes.
-- [ ] Verify only authorized roles can view audit logs.
-- [ ] Check that document integrity verification detects modified file content, where implemented.
+```bash
+python -m pytest -q tests/test_security.py
+```
 
-## 4. Evidence and Results
+**Important:** Run tests against an isolated temporary database. Do not run destructive tests against production data or a database containing real documents.
 
-Record the actual test command, date, results, and any failures before submission.
+## 3. Main Security Test Areas
 
-Do not mark a test as passed unless it has been executed and its result verified.
+### Authentication
 
-| Test area | Result |
+- Unauthenticated users cannot access protected operations.
+- Valid demo users can log in.
+- Logging out prevents further use of the logged-out session as an authenticated user.
+
+### Role-based access control
+
+- Viewers cannot perform owner-only operations.
+- Viewers cannot access administrator-only pages.
+- Owners cannot access administrator-only operations unless explicitly authorized.
+- Administrative routes enforce their role restrictions on the server.
+
+### Document-level authorization
+
+- A user cannot read another user's private document without permission.
+- Changing a document ID in a URL does not bypass authorization.
+- Direct download requests enforce the same permission checks as normal document views.
+- Unauthorized users cannot edit or delete protected documents.
+
+### Sharing and revocation
+
+- An authorized owner can grant document access to a named recipient.
+- A user without permission cannot access the document.
+- Revoking a recipient's permission blocks subsequent requests.
+- Permission changes are checked on the server rather than trusted from the browser.
+
+### File validation and integrity
+
+- Unsupported file extensions are rejected.
+- Oversized uploads are rejected.
+- Invalid file requests are handled safely.
+- File-integrity checks detect a mismatch when an expected SHA-256 hash is available and verified by the application.
+
+### Audit logging
+
+- Important successful operations generate audit records where implemented.
+- Denied access attempts are recorded where implemented.
+- Unauthorized users cannot access restricted audit views.
+- Audit records include useful information about the actor, action, document, outcome, and time where supported by the schema.
+
+## 4. Manual Role Testing
+
+Use separate demo accounts for owner, viewer, and administrator roles.
+
+| Test | Expected behavior |
 |---|---|
-| Authentication | Record actual result |
-| Document authorization | Record actual result |
-| Sharing and revocation | Record actual result |
-| Role-based access | Record actual result |
-| Audit access control | Record actual result |
-| File integrity | Record actual result |
+| Viewer requests an unshared document | Access denied |
+| Viewer downloads a shared document | Allowed only while permission remains valid |
+| Viewer attempts an owner-only operation | Access denied |
+| Viewer attempts an administrator-only route | Access denied |
+| Owner grants access to a recipient | Permission is saved and recorded where implemented |
+| Owner revokes access | Later requests from that recipient are denied |
+| Unauthenticated user requests a protected file | Authentication or access denial |
+| Unauthorized user opens the audit page | Access denied |
 
-## 5. Limitations
+Record the actual response and audit result for each test. Do not treat a hidden button or missing link as proof that a server-side security check works.
 
-Testing provides evidence for the scenarios covered; it does not prove that the application is free of security vulnerabilities. Additional testing is needed before production use.
+## 5. Automated Test Results
+
+Earlier development runs reported these results:
+
+- Security test module: **75 passed**.
+- Full test suite: **195 passed**.
+
+These are historical results, not confirmation that the latest repository version still passes. Re-run both commands after the final changes and replace the figures with the actual output before submission.
+
+```bash
+python -m pytest -q tests/test_security.py
+python -m pytest -q
+```
+
+If a test fails, investigate the failure and record the correction. Do not remove a meaningful security test merely to obtain a passing result.
+
+## 6. Test Quality and Limitations
+
+A useful authorization test should fail if the relevant authorization check is removed. For example, a test for an unshared document should make a request as a user who has no permission and verify that the response does not disclose the document.
+
+Test coverage should include direct requests, not just ordinary browser navigation. Passing automated tests provides evidence about the tested cases, but does not prove that every possible attack has been prevented.
+
+## 7. Final Verification Checklist
+
+Before submission:
+
+- [ ] Run the complete test suite on the final code.
+- [ ] Run the security test module independently.
+- [ ] Verify owner, viewer, and admin behavior with separate accounts.
+- [ ] Test direct document access and download requests.
+- [ ] Test permission revocation.
+- [ ] Check denied attempts and audit records.
+- [ ] Confirm tests use an isolated database.
+- [ ] Record the actual final test output.
+- [ ] Ensure no credentials or sensitive test files are committed.
