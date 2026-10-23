@@ -1,89 +1,89 @@
-# TrustVault API and Route Documentation
+# TrustVault API Documentation
 
 ## 1. Overview
 
-TrustVault is a Flask web application for controlled document sharing, role-based authorization, and audit logging.
+TrustVault is a Flask-based secure document-sharing application. Its routes support authentication, document management, sharing, permission revocation, and audit review.
 
-This document describes the intended route permissions. The actual routes, HTTP methods, and permissions must be compared with the submitted application's code before final submission.
+**Live deployment:** http://3.91.27.213/  
+**Repository:** https://github.com/BattuMonishaNandini10/TrustVault
 
-## 2. Authentication
+**Security note:** The live deployment uses HTTP, not verified HTTPS. Do not upload real sensitive documents.
 
-| Route | Purpose | Intended access |
+## 2. Authentication and Roles
+
+TrustVault uses authenticated user sessions and role-based authorization.
+
+| Role | Intended access |
+|---|---|
+| Owner | Manage owned documents and their sharing permissions |
+| Viewer | Access documents explicitly shared with them, subject to current permissions |
+| Admin | Access authorized administrative functions and audit records |
+
+A user's role alone should not grant access to every document. Document-level authorization must be checked for each protected operation.
+
+## 3. Route Reference
+
+The following routes are based on the project routes identified during development. Confirm the HTTP methods and behavior against `app.py`.
+
+| Route | Expected access | Purpose |
 |---|---|---|
-| `/login` | Sign in | Public |
-| `/logout` | End the current session | Authenticated users |
-| `/` | Home page | As implemented |
+| `/` | Public or authenticated, depending on implementation | Home page |
+| `/login` | Public | Sign in |
+| `/logout` | Authenticated | Sign out |
+| `/upload` | Authorized users | Upload a document |
+| `/documents` | Authorized users | View documents the user is allowed to manage |
+| `/share/<document_id>` | Authorized document owner | Grant document access |
+| `/shared` | Authenticated users | View documents shared with the current user |
+| `/admin/audit` | Admin or other explicitly authorized roles | Review audit records |
 
-## 3. Document Management
+**Important:** This table is not a substitute for checking the actual route decorators and methods. Add any edit, download, delete, search, permission-revocation, and other routes that exist in the application.
 
-| Route | Purpose | Intended access |
-|---|---|---|
-| `/upload` | Upload a document | Authorized roles only |
-| `/documents` | View owned documents | Owner or explicitly authorized roles |
-| `/my-docs` | View the current user's documents | Authenticated users, subject to ownership checks |
-| `/shared` | View documents shared with the current user | Authenticated users, subject to recipient checks |
-| `/share/<document_id>` | Grant access to a document | Document owner or authorized administrator, according to policy |
-| Document download route | Download a document | Owner or recipient with current permission |
+## 4. Authorization Requirements
 
-**Note:** The exact download URL and supported HTTP methods must be copied from the actual application routes.
+Every sensitive request should enforce authorization on the server.
 
-## 4. Administration and Audit
+- **Authentication:** Unauthenticated users must not access protected operations.
+- **Document access:** The server must check ownership or an active sharing permission before returning document contents.
+- **Download:** A direct download request must perform the same access checks as the document listing page.
+- **Editing and deletion:** Only users explicitly authorized for the requested action may modify or delete a document.
+- **Sharing:** Only an authorized document owner or other explicitly permitted role may grant access.
+- **Revocation:** Once permission is revoked, subsequent requests must deny access unless another valid permission exists.
+- **Administration:** Administrative routes must enforce the required role server-side.
+- **Audit records:** Access to audit information must be restricted to authorized users.
 
-| Route | Purpose | Intended access |
-|---|---|---|
-| `/admin` | Administrative functions | Admin only, if implemented that way |
-| `/admin/audit` | Review audit records | Authorized administrative roles |
-| `/owner` | Owner-specific functions | Owner only |
+## 5. Error Responses
 
-These permissions describe the intended security policy, not independently verified route behavior.
+Actual responses depend on the route and Flask error handlers. Verify these behaviors during testing.
 
-## 5. Authorization Requirements
-
-Every protected document operation should verify authorization on the server.
-
-- A user must not gain access by changing a document identifier.
-- A viewer must only access documents currently shared with them.
-- Revoked access must no longer permit protected document operations.
-- Users must not access owner-only or admin-only functions without the appropriate role.
-- Audit records must be protected from unauthorized viewing or modification.
-- Unauthorized requests should return an appropriate denial response.
-
-## 6. Error Responses
-
-| HTTP status | Meaning |
+| Status | Meaning |
 |---|---|
 | `200 OK` | Request succeeded |
-| `302 Found` | Redirect, commonly used by browser-based authentication |
+| `302 Found` | Redirect, commonly used in login flows |
 | `400 Bad Request` | Invalid request |
-| `401 Unauthorized` | Authentication required, where applicable |
-| `403 Forbidden` | Request denied due to insufficient permission |
-| `404 Not Found` | Resource not found |
-| `413 Content Too Large` | Upload exceeds the configured limit |
-| `500 Internal Server Error` | Unexpected server error |
+| `401 Unauthorized` | Authentication is required or invalid |
+| `403 Forbidden` | The user is not permitted to perform the action |
+| `404 Not Found` | Resource or route was not found |
+| `413 Content Too Large` | Upload exceeds the configured size limit |
+| `500 Internal Server Error` | Unexpected server-side failure |
 
-The exact response depends on the route implementation and Flask configuration.
+Where appropriate, the application may return a generic not-found response instead of revealing whether an inaccessible document exists.
 
-## 7. File Upload Security
+## 6. Security Testing
 
-The application should validate allowed file types and enforce a maximum upload size. Uploaded files should be stored privately and downloaded only after authorization checks.
+Test the routes with separate owner, viewer, and admin accounts.
 
-## 8. Audit Events
+1. Verify that unauthenticated requests cannot access protected documents.
+2. Verify that a viewer cannot access a document that has not been shared with them.
+3. Attempt direct downloads by changing document IDs.
+4. Verify that revoking permission blocks subsequent document requests.
+5. Verify that unauthorized edit and delete requests are denied.
+6. Verify that only authorized roles can access administrative audit routes.
+7. Verify that denied attempts are recorded where audit logging is implemented.
 
-Audit records should contain relevant details such as:
+Run automated tests against an isolated test database rather than the production database.
 
-- Actor or username
-- Action performed
-- Target document, where applicable
-- Timestamp
-- Outcome, such as success or denial
+## 7. Limitations
 
-Do not expose secrets or document contents in audit records.
+This document must be reconciled with the final application before submission. Route methods, request parameters, response formats, and error handling should be documented only after checking the implementation.
 
-## 9. Verification Before Submission
-
-- [ ] Compare this document with every route in the actual application.
-- [ ] Record the real HTTP methods for each route.
-- [ ] Verify the access requirements against decorators and authorization checks.
-- [ ] Confirm the exact document download endpoint.
-- [ ] Run tests for allowed and denied roles.
-- [ ] Remove any routes that do not exist from this documentation.
+The existence of a route does not prove that its authorization checks are correct. Automated and manual tests should confirm the actual behavior.
