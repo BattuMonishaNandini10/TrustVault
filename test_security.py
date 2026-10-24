@@ -2759,3 +2759,309 @@ def test_admin_security_dashboard_shows_counts_and_recent_activity(
         b'        <div class="stat-label">Access-Denied Attempts</div>'
     ) in response.data
 
+
+def test_document_search_filters_owner_category_and_dates_without_leaks(
+    isolated_app
+):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET uploaded_at = ? WHERE id = 1",
+            ("2026-10-02T10:15:00+00:00",),
+        )
+        conn.execute(
+            """
+            INSERT INTO documents
+                (id, filename, owner, category, owner_id, uploaded_at,
+                 stored_filename)
+            VALUES (2, 'private-plan.txt', 'test_admin', 'Finance', 3,
+                    '2026-10-03T10:15:00+00:00', 'private-plan.txt')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    filters = (
+        "owner=test_owner&category=test"
+        "&date_from=2026-10-01&date_to=2026-10-02"
+    )
+    page = client.get("/document-search?" + filters)
+    api = client.get("/api/document-search?" + filters)
+    private_owner_search = client.get(
+        "/document-search?owner=test_admin"
+    )
+
+    assert page.status_code == 200
+    assert b"sample.txt" in page.data
+    assert b"private-plan.txt" not in page.data
+    assert api.status_code == 200
+    assert api.get_json()["count"] == 1
+    assert api.get_json()["documents"][0]["filename"] == "sample.txt"
+    assert private_owner_search.status_code == 200
+    assert b"private-plan.txt" not in private_owner_search.data
+
+
+def test_ungranted_owner_cannot_read_change_or_delete_another_owners_document(
+    isolated_app
+):
+    client = isolated_app.test_client()
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET owner = ?, owner_id = ? WHERE id = 1",
+            ("test_admin", 3),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    responses = [
+        client.get("/view/1"),
+        client.get("/preview-pdf/1"),
+        client.get("/download/1"),
+        client.get("/edit/1"),
+        client.post("/edit/1", data={
+            "filename": "changed.txt",
+            "category": "Changed",
+        }),
+        client.post("/share/1", data={
+            "username": "test_viewer",
+            "permission": "read",
+        }),
+        client.post("/revoke/1/test_viewer"),
+        client.post("/delete/1"),
+    ]
+
+    assert [response.status_code for response in responses] == [403] * 8
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT filename, category, owner_id FROM documents WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert document["filename"] == "sample.txt"
+    assert document["category"] == "test"
+    assert document["owner_id"] == 3
+
+
+def test_admin_can_access_and_manage_all_document_content_routes(
+    isolated_app, tmp_path, monkeypatch
+):
+    import hashlib
+
+    client = isolated_app.test_client()
+    file_data = b"%PDF-1.7\nTrustVault admin access test\n"
+    stored_file = tmp_path / "sample.pdf"
+    stored_file.write_bytes(file_data)
+    monkeypatch.setattr(trustvault, "UPLOAD_FOLDER", str(tmp_path))
+    monkeypatch.setattr(trustvault, "log_event", original_log_event)
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE documents
+            SET filename = ?, stored_filename = ?, sha256 = ?
+            WHERE id = 1
+            """,
+            (
+                "sample.pdf",
+                "sample.pdf",
+                hashlib.sha256(file_data).hexdigest(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 3
+        session["username"] = "test_admin"
+        session["role"] = "admin"
+
+    view_response = client.get("/view/1")
+    preview_response = client.get("/preview-pdf/1")
+    download_response = client.get("/download/1")
+    edit_page = client.get("/edit/1")
+    edit_response = client.post(
+        "/edit/1",
+        data={"filename": "renamed.pdf", "category": "Legal"},
+    )
+    delete_response = client.post("/delete/1", follow_redirects=False)
+
+    assert view_response.status_code == 200
+    assert preview_response.status_code == 200
+    assert preview_response.data == file_data
+    assert download_response.status_code == 200
+    assert download_response.data == file_data
+    assert edit_page.status_code == 200
+    assert edit_response.status_code == 302
+    assert delete_response.status_code == 302
+    assert not stored_file.exists()
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT id FROM documents WHERE id = 1"
+        ).fetchone()
+        actions = {
+            row["action"]
+            for row in conn.execute(
+                "SELECT action FROM audit_logs WHERE document_id = 1"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert document is None
+    assert {"VIEW", "DOWNLOAD", "EDIT", "DELETE"} <= actions
+
+
+def test_edit_grant_allows_preview_and_metadata_change_not_delete(
+    isolated_app, tmp_path, monkeypatch
+):
+    client = isolated_app.test_client()
+    file_data = b"%PDF-1.7\nEdit-grantee preview test\n"
+    stored_file = tmp_path / "sample.pdf"
+    stored_file.write_bytes(file_data)
+    monkeypatch.setattr(trustvault, "UPLOAD_FOLDER", str(tmp_path))
+
+    conn = trustvault.get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET filename = ?, stored_filename = ? "
+            "WHERE id = 1",
+            ("sample.pdf", "sample.pdf"),
+        )
+        conn.execute(
+            "UPDATE document_permissions SET permission = 'edit' "
+            "WHERE document_id = 1 AND username = 'test_viewer'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with client.session_transaction() as session:
+        session["user_id"] = 2
+        session["username"] = "test_viewer"
+        session["role"] = "viewer"
+
+    preview = client.get("/preview-pdf/1")
+    edit = client.post(
+        "/edit/1",
+        data={"filename": "updated.pdf", "category": "Finance"},
+    )
+    delete = client.post("/delete/1")
+
+    assert preview.status_code == 200
+    assert preview.data == file_data
+    assert edit.status_code == 302
+    assert delete.status_code == 403
+    assert stored_file.exists()
+
+    conn = trustvault.get_db_connection()
+    try:
+        document = conn.execute(
+            "SELECT filename, category FROM documents WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert document["filename"] == "updated.pdf"
+    assert document["category"] == "Finance"
+
+
+def test_document_permission_grants_and_revocations_are_audited(
+    isolated_app, monkeypatch
+):
+    client = isolated_app.test_client()
+    monkeypatch.setattr(trustvault, "log_event", original_log_event)
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    grant_response = client.post(
+        "/share/1",
+        data={"username": "test_admin", "permission": "edit"},
+    )
+    revoke_response = client.post("/revoke/1/test_admin")
+
+    assert grant_response.status_code == 302
+    assert revoke_response.status_code == 302
+
+    conn = trustvault.get_db_connection()
+    try:
+        events = conn.execute(
+            """
+            SELECT action, details, result
+            FROM audit_logs
+            WHERE document_id = 1 AND action IN ('SHARE', 'REVOKE')
+            ORDER BY id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert [event["action"] for event in events] == ["SHARE", "REVOKE"]
+    assert "edit access" in events[0]["details"].lower()
+    assert "test_admin" in events[1]["details"]
+    assert all(event["result"] == "SUCCESS" for event in events)
+
+
+def test_upload_over_request_size_limit_is_rejected_before_storage(
+    isolated_app, monkeypatch
+):
+    import io
+
+    client = isolated_app.test_client()
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            raise AssertionError("Oversized files must not reach S3")
+
+    monkeypatch.setattr(trustvault, "s3_client", FakeS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    oversized_file = b"x" * (10 * 1024 * 1024 + 1)
+    response = client.post(
+        "/upload",
+        data={
+            "file": (io.BytesIO(oversized_file), "oversized.txt"),
+            "category": "Technical",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 413
+
+    conn = trustvault.get_db_connection()
+    try:
+        document_count = conn.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert document_count == 1
+

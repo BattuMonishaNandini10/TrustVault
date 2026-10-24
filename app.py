@@ -15,7 +15,7 @@ from functools import wraps
 
 from flask import (
     Flask, request, redirect, url_for, session,
-    send_file, flash, abort, render_template_string
+    send_file, flash, abort, render_template, render_template_string
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -1774,12 +1774,13 @@ def view_document(document_id):
 
     username = session["username"]
     is_uploader = doc["owner_id"] == session["user_id"]
+    is_admin = session.get("role") == "admin"
 
     permission, expired_share = get_document_permission(
         document_id, username, ("read", "edit")
     )
 
-    if not (is_uploader or permission):
+    if not (is_uploader or is_admin or permission):
         if expired_share:
             log_expired_share_access(username, "VIEW", document_id)
         else:
@@ -1836,6 +1837,7 @@ def preview_pdf(document_id):
 
     username = session["username"]
     is_uploader = doc["owner_id"] == session["user_id"]
+    is_admin = session.get("role") == "admin"
 
     permission, expired_share = get_document_permission(
         document_id, username, ("read", "edit")
@@ -1843,7 +1845,8 @@ def preview_pdf(document_id):
 
     if not (
         is_uploader
-        or (permission and permission["permission"] == "read")
+        or is_admin
+        or (permission and permission["permission"] in ("read", "edit"))
     ):
         if expired_share:
             log_expired_share_access(username, "PREVIEW", document_id)
@@ -1975,12 +1978,13 @@ def download_document(document_id):
 
     username = session["username"]
     is_owner = doc["owner_id"] == session["user_id"]
+    is_admin = session.get("role") == "admin"
     permission, expired_share = get_document_permission(
         document_id, username, ("read", "edit")
     )
 
     # Preserve existing access-control rules.
-    if not (is_owner or permission):
+    if not (is_owner or is_admin or permission):
         if expired_share:
             log_expired_share_access(username, "DOWNLOAD", document_id)
         else:
