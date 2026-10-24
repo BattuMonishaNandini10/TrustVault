@@ -43,6 +43,7 @@ def isolated_app(monkeypatch):
             username TEXT NOT NULL,
             permission TEXT NOT NULL DEFAULT 'read',
             user_id INTEGER,
+            expires_at TEXT,
             UNIQUE(document_id, username)
         );
 

@@ -3,6 +3,7 @@ import os
 import sqlite3
 import hashlib
 import secrets
+import zipfile
 import boto3
 import subprocess
 import tempfile
@@ -15,7 +16,7 @@ from functools import wraps
 
 from flask import (
     Flask, request, redirect, url_for, session,
-    send_file, flash, abort, render_template_string
+    send_file, flash, abort, render_template, render_template_string
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -252,6 +253,12 @@ label { color:#b7c9e0;font-size:12px;font-weight:700; }
   padding:13px 16px;border:1px solid var(--line);
   background:#102139;border-radius:10px;margin:12px 0;
 }
+.filter-form {
+  display:grid;grid-template-columns:minmax(180px,2fr)
+    minmax(160px,1fr) auto;gap:12px;align-items:end;
+  margin:0 0 18px;
+}
+.filter-form input,.filter-form select { margin:7px 0 0; }
 .empty { text-align:center;padding:45px 15px;color:var(--muted); }
 .empty-icon { font-size:36px;margin-bottom:10px; }
 .footer { margin-top:35px;color:#536b89;font-size:11px; }
@@ -286,6 +293,7 @@ label { color:#b7c9e0;font-size:12px;font-weight:700; }
   .nav { padding:9px;font-size:12px; }
   .main { padding:20px 13px; }
   .stats,.quick-grid { grid-template-columns:1fr 1fr; }
+  .filter-form { grid-template-columns:1fr; }
   .login-wrap { grid-template-columns:1fr;padding:18px; }
   .login-brand { display:none; }
   h1 { font-size:24px; }
@@ -345,11 +353,18 @@ label { color:#b7c9e0;font-size:12px;font-weight:700; }
         <a class="nav {{ 'active' if active=='mydocs' else '' }}" href="{{ url_for('my_documents') }}"><span class="nav-icon">▤</span>My Documents</a>
         <a class="nav {{ 'active' if active=='upload' else '' }}" href="{{ url_for('upload_document') }}"><span class="nav-icon">⇧</span>Upload Document</a>
         <a class="nav {{ 'active' if active=='shared' else '' }}" href="{{ url_for('shared_documents') }}"><span class="nav-icon">◉</span>Shared With Me</a>
-        <a class="nav {{ 'active' if active=='audit' else '' }}" href="{{ url_for('audit_logs') }}"><span class="nav-icon">◷</span>Audit Trail</a>
+        <a class="nav {{ 'active' if active=='search' else '' }}" href="{{ url_for('document_search') }}"><span class="nav-icon">⌕</span>Search Documents</a>
+        {% if role == 'admin' %}
+          <a class="nav {{ 'active' if active=='audit' else '' }}" href="{{ url_for('audit_logs') }}"><span class="nav-icon">◷</span>Audit Trail</a>
+        {% endif %}
       </nav>
       <div class="nav-label">SECURITY</div>
       <nav>
-        <a class="nav {{ 'active' if active=='security' else '' }}" href="{{ url_for('home') }}{{ '#admin-access' if session.get('role') == 'admin' else '#security' }}"><span class="nav-icon">🛡</span>Security Center</a>
+        {% if role == 'admin' %}
+          <a class="nav {{ 'active' if active=='security-dashboard' else '' }}" href="{{ url_for('security_dashboard') }}"><span class="nav-icon">🛡</span>Security Dashboard</a>
+        {% else %}
+          <a class="nav {{ 'active' if active=='security' else '' }}" href="{{ url_for('home') }}#security"><span class="nav-icon">🛡</span>Security Center</a>
+        {% endif %}
       </nav>
       <div class="sidebar-bottom">
         <div class="cloud-status">
@@ -417,6 +432,92 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_utc_datetime(value):
+    """Parse an ISO timestamp and normalize it to UTC."""
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def share_is_expired(expires_at, now=None):
+    """Treat malformed non-empty expiry values as expired (fail closed)."""
+    if not expires_at:
+        return False
+
+    expiry = parse_utc_datetime(expires_at)
+    if expiry is None:
+        return True
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    return expiry <= current_time.astimezone(timezone.utc)
+
+
+def parse_share_expiry(value):
+    """Parse a datetime-local value as UTC and require a future time."""
+    if not value:
+        return None
+
+    try:
+        expiry = datetime.strptime(
+            value, "%Y-%m-%dT%H:%M"
+        ).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Enter a valid expiry date and time in UTC."
+        ) from error
+
+    if expiry <= datetime.now(timezone.utc):
+        raise ValueError("Expiry must be in the future.")
+    return expiry.isoformat()
+
+
+def get_document_permission(
+    document_id, username, permissions=("read", "edit")
+):
+    """Return an active permission and whether a matching grant expired."""
+    if not permissions:
+        return None, False
+
+    placeholders = ", ".join("?" for _ in permissions)
+    conn = get_db_connection()
+    try:
+        permission = conn.execute(
+            f"""
+            SELECT id, permission, expires_at
+            FROM document_permissions
+            WHERE document_id = ? AND username = ?
+              AND permission IN ({placeholders})
+            """,
+            (document_id, username, *permissions),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if permission and share_is_expired(permission["expires_at"]):
+        return None, True
+    return permission, False
+
+
+def log_expired_share_access(username, action, document_id):
+    log_event(
+        username,
+        "SHARE_EXPIRED",
+        document_id,
+        "Expired share access denied for " + action,
+        "DENIED",
+    )
+
+
 def init_db():
     conn = get_db_connection()
     try:
@@ -447,6 +548,7 @@ def init_db():
                 username TEXT NOT NULL,
                 permission TEXT NOT NULL DEFAULT 'read',
                 user_id INTEGER,
+                expires_at TEXT,
                 UNIQUE(document_id, username)
             )
         """)
@@ -487,6 +589,10 @@ def init_db():
         if "user_id" not in pcols:
             conn.execute(
                 "ALTER TABLE document_permissions ADD COLUMN user_id INTEGER"
+            )
+        if "expires_at" not in pcols:
+            conn.execute(
+                "ALTER TABLE document_permissions ADD COLUMN expires_at TEXT"
             )
 
         conn.execute("""
@@ -595,6 +701,39 @@ def allowed_file(filename):
         "." in filename
         and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
     )
+
+
+def validate_upload_content(filename, file_data):
+    """Check the stored bytes against the allowed filename extension."""
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension == ".pdf":
+        return file_data.startswith(b"%PDF-")
+    if extension == ".png":
+        return file_data.startswith(b"\x89PNG\r\n\x1a\n")
+    if extension in (".jpg", ".jpeg"):
+        return file_data.startswith(b"\xff\xd8\xff")
+    if extension == ".docx":
+        try:
+            with zipfile.ZipFile(BytesIO(file_data)) as archive:
+                names = set(archive.namelist())
+            return (
+                "[Content_Types].xml" in names
+                and "word/document.xml" in names
+            )
+        except (OSError, zipfile.BadZipFile):
+            return False
+    if extension in (".txt", ".csv"):
+        try:
+            if file_data.startswith((b"\xff\xfe", b"\xfe\xff")):
+                text = file_data.decode("utf-16")
+            else:
+                text = file_data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return False
+        return "\x00" not in text
+
+    return False
 
 
 def document_path(stored_filename):
@@ -897,7 +1036,11 @@ def home():
                 SELECT COUNT(*) FROM document_permissions p
                 JOIN documents d ON d.id=p.document_id
                 WHERE d.owner_id=?
-            """, (user_id,)).fetchone()[0]
+                  AND (
+                    p.expires_at IS NULL
+                    OR julianday(p.expires_at) > julianday(?)
+                  )
+            """, (user_id, utc_now())).fetchone()[0]
 
             stats = [
                 ("▤", "My Documents", total_docs, "blue"),
@@ -913,13 +1056,21 @@ def home():
                 JOIN document_permissions p
                   ON p.document_id=d.id
                 WHERE p.username=? AND p.permission IN ('read', 'edit')
+                  AND (
+                    p.expires_at IS NULL
+                    OR julianday(p.expires_at) > julianday(?)
+                  )
                 ORDER BY d.id DESC LIMIT 8
-            """, (username,)).fetchall()
+            """, (username, utc_now())).fetchall()
 
             shared_count = conn.execute("""
                 SELECT COUNT(*) FROM document_permissions
                 WHERE username=? AND permission='read'
-            """, (username,)).fetchone()[0]
+                  AND (
+                    expires_at IS NULL
+                    OR julianday(expires_at) > julianday(?)
+                  )
+            """, (username, utc_now())).fetchone()[0]
 
             stats = [
                 ("◉", "My Access", shared_count, "blue"),
@@ -948,7 +1099,18 @@ def home():
             "LABEL", str(label)
         )
 
-    if role in ("owner", "admin"):
+    if role == "admin":
+        quick_actions = [
+            ("🛡", "Security Dashboard", "Review active shares and recent security events",
+             "security_dashboard"),
+            ("⇧", "Upload Document", "Add a file to your vault",
+             "upload_document"),
+            ("♧", "Manage Documents", "Review your document access",
+             "my_documents"),
+            ("◉", "Shared With Me", "View documents shared with you",
+             "shared_documents"),
+        ]
+    elif role == "owner":
         quick_actions = [
             ("⇧", "Upload Document", "Add a file to your vault",
              "upload_document"),
@@ -956,8 +1118,8 @@ def home():
              "my_documents"),
             ("◉", "Shared With Me", "View documents shared with you",
              "shared_documents"),
-            ("◷", "Audit Trail", "Review recorded activity",
-             "audit_logs"),
+            ("⌕", "Search Documents", "Find files by name or category",
+             "document_search"),
         ]
     else:
         quick_actions = [
@@ -1262,72 +1424,118 @@ def accessible_documents():
             SELECT d.*
             FROM documents d
             JOIN document_permissions p ON p.document_id=d.id
-            WHERE p.username=? AND p.permission='read'
+            WHERE p.username=?
+              AND p.permission IN ('read', 'edit')
+              AND (
+                p.expires_at IS NULL
+                OR julianday(p.expires_at) > julianday(?)
+              )
             ORDER BY d.id DESC
-        """, (session["username"],)).fetchall()
+        """, (session["username"], utc_now())).fetchall()
     finally:
         conn.close()
+
+
+def filter_document_rows(documents, name="", category=""):
+    name_filter = name.casefold()
+    category_filter = category.casefold()
+    return [
+        doc for doc in documents
+        if name_filter in str(doc["filename"]).casefold()
+        and (
+            not category_filter
+            or str(doc["category"]).casefold() == category_filter
+        )
+    ]
 
 
 @app.route("/my-docs")
 @role_required("owner", "admin")
 def my_documents():
-    docs = accessible_documents()
-    rows = ""
-
-    for doc in docs:
-        rows += """
-        <tr>
-          <td><span class="file-name">
-            <span class="file-icon">▤</span>NAME
-          </span></td>
-          <td>CATEGORY</td>
-          <td><a class="btn btn-small"
-                 href="SHARE">♧ Manage Access</a></td>
-          <td><a class="btn btn-small"
-                 href="DOWNLOAD">↓ Download</a></td>
-          <td>
-            <form class="inline" method="post" action="DELETE"
-                  onsubmit="return confirm('Delete this document?')">
-              <button class="btn btn-danger btn-small">Delete</button>
-            </form>
-          </td>
-        </tr>
-        """.replace("NAME", doc["filename"]).replace(
-            "CATEGORY", doc["category"]
-        ).replace("SHARE", url_for(
-            "share_document", document_id=doc["id"]
-        )).replace("VIEW", url_for(
-    "view_document", document_id=doc["id"]
-)).replace("DELETE", url_for(
-            "delete_document", document_id=doc["id"]
-        ))
-
-    if not rows:
-        rows = '<tr><td colspan="5">No documents found.</td></tr>'
+    name = request.args.get("name", "").strip()[:200]
+    category = request.args.get("category", "").strip()[:100]
+    all_docs = accessible_documents()
+    categories = sorted(
+        {str(doc["category"]) for doc in all_docs if doc["category"]},
+        key=str.casefold,
+    )
+    docs = filter_document_rows(all_docs, name, category)
 
     content = """
     <div class="section-head">
       <h2>Document Vault</h2>
-      <a class="btn btn-primary" href="UPLOAD">＋ Upload Document</a>
+      <a class="btn btn-primary" href="{{ url_for('upload_document') }}">
+        ＋ Upload Document
+      </a>
     </div>
+    <form class="filter-form" method="get">
+      <div>
+        <label for="document-name">Search by document name</label>
+        <input id="document-name" type="search" name="name"
+               value="{{ search_name }}" placeholder="Enter a name">
+      </div>
+      <div>
+        <label for="document-category">Filter by category</label>
+        <select id="document-category" name="category">
+          <option value="">All categories</option>
+          {% for item in categories %}
+            <option value="{{ item }}"
+              {% if selected_category|lower == item|lower %}selected{% endif %}>
+              {{ item }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <button class="btn btn-primary" type="submit">Filter</button>
+        <a class="btn" href="{{ url_for('my_documents') }}">Clear</a>
+      </div>
+    </form>
     <div class="table-wrap">
       <table>
         <thead><tr>
           <th>DOCUMENT</th><th>CATEGORY</th>
           <th>ACCESS</th><th>DOWNLOAD</th><th>DELETE</th>
         </tr></thead>
-        <tbody>ROWS</tbody>
+        <tbody>
+          {% for doc in docs %}
+            <tr>
+              <td><span class="file-name">
+                <span class="file-icon">▤</span>{{ doc["filename"] }}
+              </span></td>
+              <td>{{ doc["category"] }}</td>
+              <td><a class="btn btn-small"
+                     href="{{ url_for('share_document', document_id=doc['id']) }}">
+                ♧ Manage Access
+              </a></td>
+              <td><a class="btn btn-small"
+                     href="{{ url_for('download_document', document_id=doc['id']) }}">
+                ↓ Download
+              </a></td>
+              <td>
+                <form class="inline" method="post"
+                      action="{{ url_for('delete_document', document_id=doc['id']) }}"
+                      onsubmit="return confirm('Delete this document?')">
+                  <button class="btn btn-danger btn-small">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">No matching documents found.</td></tr>
+          {% endfor %}
+        </tbody>
       </table>
     </div>
-    """.replace("ROWS", rows).replace(
-        "UPLOAD", url_for("upload_document")
-    )
+    """
 
     return render_page(
         "My Documents", content,
         active="mydocs",
-        subtitle="Organize documents and manage access"
+        subtitle="Organize documents and manage access",
+        docs=docs,
+        categories=categories,
+        search_name=name,
+        selected_category=category,
     )
 
 # --------------------------------------------------
@@ -1362,6 +1570,12 @@ def upload_document():
 
             if not file_data:
                 flash("The selected document is empty.")
+                return redirect(url_for("upload_document"))
+
+            if not validate_upload_content(filename, file_data):
+                flash(
+                    "The file contents do not match the selected file type."
+                )
                 return redirect(url_for("upload_document"))
 
             # Upload the document to private S3 with server-side encryption.
@@ -1478,79 +1692,106 @@ def upload_document():
 @app.route("/shared")
 @role_required("viewer", "owner", "admin")
 def shared_documents():
+    name = request.args.get("name", "").strip()[:200]
+    category = request.args.get("category", "").strip()[:100]
     conn = get_db_connection()
     try:
-        docs = conn.execute("""
-            SELECT d.*, u.username AS owner_name, p.permission AS shared_permission p.permission AS shared_permission
+        all_docs = conn.execute("""
+            SELECT d.*, u.username AS owner_name,
+                   p.permission AS shared_permission, p.expires_at
             FROM documents d
             JOIN document_permissions p ON p.document_id=d.id
             JOIN users u ON u.id=d.owner_id
-            WHERE p.username=? AND p.permission='read'
+            WHERE p.username=?
+              AND p.permission IN ('read', 'edit')
+              AND (
+                p.expires_at IS NULL
+                OR julianday(p.expires_at) > julianday(?)
+              )
             ORDER BY d.id DESC
-        """, (session["username"],)).fetchall()
+        """, (session["username"], utc_now())).fetchall()
     finally:
         conn.close()
 
-    rows = ""
-    for doc in docs:
-        filename = doc["filename"]
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        symbol = {
-            "pdf": "📕", "docx": "📘", "txt": "📄",
-            "csv": "📊", "png": "🖼", "jpg": "🖼", "jpeg": "🖼"
-        }.get(ext, "📄")
-
-        rows += """
-        <tr>
-          <td><span class="file-name">
-            <span class="file-icon">ICON</span>NAME
-          </span></td>
-          <td>OWNER</td>
-          <td><span class="badge blue">PERMISSION_LABEL</span></td>
-          <td><a class="btn btn-small" href="DOWNLOAD">Download Document</a></td>
-        </tr>
-               """.replace("ICON", symbol).replace(
-            "NAME", filename
-        ).replace(
-    "PERMISSION_LABEL",
-    "Edit access" if doc["shared_permission"] == "edit"
-    else "Read only"
-)
-    if not rows:
-        rows = """
-        <tr><td colspan="4">
-          <div class="empty">
-            <div class="empty-icon">◉</div>
-            <h3>No shared documents yet</h3>
-            <p>When an owner grants you access, documents will appear here.</p>
-          </div>
-        </td></tr>
-        """
+    categories = sorted(
+        {str(doc["category"]) for doc in all_docs if doc["category"]},
+        key=str.casefold,
+    )
+    docs = filter_document_rows(all_docs, name, category)
 
     content = """
     <div class="card">
       <div class="section-head">
         <div>
           <h2>Documents shared with your account</h2>
-          <p class="small">Only current read permissions are displayed.</p>
+          <p class="small">Only active read and edit grants are displayed.</p>
         </div>
         <span class="badge">⛨ Access checked</span>
       </div>
+      <form class="filter-form" method="get">
+        <div>
+          <label for="document-name">Search by document name</label>
+          <input id="document-name" type="search" name="name"
+                 value="{{ search_name }}" placeholder="Enter a name">
+        </div>
+        <div>
+          <label for="document-category">Filter by category</label>
+          <select id="document-category" name="category">
+            <option value="">All categories</option>
+            {% for item in categories %}
+              <option value="{{ item }}"
+                {% if selected_category|lower == item|lower %}selected{% endif %}>
+                {{ item }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <button class="btn btn-primary" type="submit">Filter</button>
+          <a class="btn" href="{{ url_for('shared_documents') }}">Clear</a>
+        </div>
+      </form>
       <div class="table-wrap">
         <table>
           <thead><tr>
             <th>DOCUMENT</th><th>OWNER</th>
             <th>PERMISSION</th><th>ACTION</th>
           </tr></thead>
-          <tbody>ROWS</tbody>
+          <tbody>
+            {% for doc in docs %}
+              <tr>
+                <td><span class="file-name">
+                  <span class="file-icon">▤</span>{{ doc["filename"] }}
+                </span></td>
+                <td>{{ doc["owner_name"] }}</td>
+                <td>
+                  <span class="badge blue">
+                    {{ "Edit access" if doc["shared_permission"] == "edit" else "Read only" }}
+                  </span>
+                </td>
+                <td>
+                  <a class="btn btn-small"
+                     href="{{ url_for('download_document', document_id=doc['id']) }}">
+                    Download Document
+                  </a>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="4">No matching documents found.</td></tr>
+            {% endfor %}
+          </tbody>
         </table>
       </div>
     </div>
-    """.replace("ROWS", rows)
+    """
 
     return render_page(
         "Viewer Document Access", content, active="shared",
-        subtitle="Browse documents that have been explicitly shared with you"
+        subtitle="Browse documents that have been explicitly shared with you",
+        docs=docs,
+        categories=categories,
+        search_name=name,
+        selected_category=category,
     )
 
 
@@ -1573,23 +1814,20 @@ def view_document(document_id):
 
     username = session["username"]
     is_uploader = doc["owner_id"] == session["user_id"]
+    is_admin = session.get("role") == "admin"
 
-    conn = get_db_connection()
-    try:
-        permission = conn.execute("""
-            SELECT id FROM document_permissions
-            WHERE document_id = ?
-              AND username = ?
-              AND permission IN ('read', 'edit')
-        """, (document_id, username)).fetchone()
-    finally:
-        conn.close()
+    permission, expired_share = get_document_permission(
+        document_id, username, ("read", "edit")
+    )
 
-    if not (is_uploader or permission):
-        log_event(
-            username, "VIEW", document_id,
-            "Unauthorized view attempt", "DENIED"
-        )
+    if not (is_uploader or is_admin or permission):
+        if expired_share:
+            log_expired_share_access(username, "VIEW", document_id)
+        else:
+            log_event(
+                username, "VIEW", document_id,
+                "Unauthorized view attempt", "DENIED"
+            )
         abort(403)
 
     extension = os.path.splitext(doc["filename"])[1].lower()
@@ -1639,23 +1877,24 @@ def preview_pdf(document_id):
 
     username = session["username"]
     is_uploader = doc["owner_id"] == session["user_id"]
+    is_admin = session.get("role") == "admin"
 
-    conn = get_db_connection()
-    try:
-        permission = conn.execute("""
-            SELECT id FROM document_permissions
-            WHERE document_id = ?
-              AND username = ?
-              AND permission = 'read'
-        """, (document_id, username)).fetchone()
-    finally:
-        conn.close()
+    permission, expired_share = get_document_permission(
+        document_id, username, ("read", "edit")
+    )
 
-    if not (is_uploader or permission):
-        log_event(
-            username, "VIEW", document_id,
-            "Unauthorized preview request", "DENIED"
-        )
+    if not (
+        is_uploader
+        or is_admin
+        or (permission and permission["permission"] in ("read", "edit"))
+    ):
+        if expired_share:
+            log_expired_share_access(username, "PREVIEW", document_id)
+        else:
+            log_event(
+                username, "VIEW", document_id,
+                "Unauthorized preview request", "DENIED"
+            )
         abort(403)
 
     extension = os.path.splitext(doc["filename"])[1].lower()
@@ -1779,21 +2018,20 @@ def download_document(document_id):
 
     username = session["username"]
     is_owner = doc["owner_id"] == session["user_id"]
-    conn = get_db_connection()
-    try:
-        permission = conn.execute("""
-            SELECT id FROM document_permissions
-            WHERE document_id=? AND username=? AND permission IN ('read', 'edit')
-        """, (document_id, username)).fetchone()
-    finally:
-        conn.close()
+    is_admin = session.get("role") == "admin"
+    permission, expired_share = get_document_permission(
+        document_id, username, ("read", "edit")
+    )
 
     # Preserve existing access-control rules.
-    if not (is_owner or permission):
-        log_event(
-            username, "DOWNLOAD", document_id,
-            "Unauthorized download attempt", "DENIED"
-        )
+    if not (is_owner or is_admin or permission):
+        if expired_share:
+            log_expired_share_access(username, "DOWNLOAD", document_id)
+        else:
+            log_event(
+                username, "DOWNLOAD", document_id,
+                "Unauthorized download attempt", "DENIED"
+            )
         abort(403)
 
     # New documents are stored in private S3.
@@ -1886,12 +2124,17 @@ def share_document(document_id):
         abort(403)
 
     if request.method == "POST":
-        
         target_username = request.form.get("username", "").strip()
-        app.logger.warning("SHARE DEBUG: document_id=%s username=%r permission=%r",
-                   document_id, target_username,
-                   request.form.get("permission"))
         requested_permission = request.form.get("permission", "read").strip().lower()
+        try:
+            expires_at = parse_share_expiry(
+                request.form.get("expires_at", "").strip()
+            )
+        except ValueError as error:
+            flash(str(error))
+            return redirect(url_for(
+                "share_document", document_id=document_id
+            ))
 
         conn = get_db_connection()
         try:
@@ -1908,26 +2151,32 @@ def share_document(document_id):
             else:
                 conn.execute("""
                     INSERT INTO document_permissions
-                    (document_id, username, permission, user_id)
-                    VALUES (?, ?, ?, ?)
+                    (document_id, username, permission, user_id, expires_at)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(document_id, username)
                     DO UPDATE SET
                         permission=excluded.permission,
-                        user_id=excluded.user_id
+                        user_id=excluded.user_id,
+                        expires_at=excluded.expires_at
                 """, (
                     document_id,
                     target["username"],
                     requested_permission,
                     target["id"],
+                    expires_at,
                 ))
                 conn.commit()
 
+                expiry_note = (
+                    " (expires " + expires_at + " UTC)"
+                    if expires_at else " (no expiry)"
+                )
                 log_event(
                     session["username"],
                     "SHARE",
                     document_id,
                     "Granted " + requested_permission
-                    + " access to " + target_username,
+                    + " access to " + target_username + expiry_note,
                 )
                 flash(
                     requested_permission.capitalize()
@@ -1945,15 +2194,10 @@ def share_document(document_id):
             "share_document", document_id=document_id
         ))
 
-
-        return redirect(url_for(
-            "share_document", document_id=document_id
-        ))
-
     conn = get_db_connection()
     try:
         permissions = conn.execute("""
-            SELECT username, permission
+            SELECT username, permission, expires_at
             FROM document_permissions
             WHERE document_id=?
             ORDER BY username
@@ -1961,18 +2205,29 @@ def share_document(document_id):
     finally:
         conn.close()
 
-        permission_rows = ""
+    from markupsafe import escape
+
+    permission_rows = ""
     for item in permissions:
         permission_label = (
             "✎ Edit access"
             if item["permission"] == "edit"
             else "◉ Read only"
         )
+        expires_at = item["expires_at"]
+        if not expires_at:
+            expiry_label = "No expiry"
+        else:
+            expiry_status = (
+                "Expired" if share_is_expired(expires_at) else "UTC"
+            )
+            expiry_label = str(expires_at) + " · " + expiry_status
 
         permission_rows += """
         <tr>
-          <td>USER</td>
+          <td>USERNAME_VALUE</td>
           <td><span class="badge blue">PERMISSION_LABEL</span></td>
+          <td>EXPIRY_VALUE</td>
           <td>
             <form method="post" action="REVOKE" class="inline">
               <button class="btn btn-danger btn-small">⛨ Revoke</button>
@@ -1980,9 +2235,11 @@ def share_document(document_id):
           </td>
         </tr>
         """.replace(
-            "USER", item["username"]
+            "USERNAME_VALUE", str(escape(item["username"]))
         ).replace(
             "PERMISSION_LABEL", permission_label
+        ).replace(
+            "EXPIRY_VALUE", str(escape(expiry_label))
         ).replace(
             "REVOKE", url_for(
                 "revoke_document",
@@ -1992,7 +2249,7 @@ def share_document(document_id):
         )
 
     if not permission_rows:
-        permission_rows = '<tr><td colspan="3">No grants yet.</td></tr>'
+        permission_rows = '<tr><td colspan="4">No grants yet.</td></tr>'
 
     content = """
     <div class="grid" style="grid-template-columns:1fr 1.3fr">
@@ -2005,27 +2262,33 @@ def share_document(document_id):
           <input value="DOCUMENT_NAME" disabled>
           <label>USERNAME</label>
           <input name="username" placeholder="Enter exact username" required>
-                    <label>PERMISSION</label>
+          <label>PERMISSION</label>
           <select name="permission" required>
             <option value="read">Read access</option>
             <option value="edit">Edit access</option>
           </select>
+          <label>OPTIONAL EXPIRY (UTC)</label>
+          <input type="datetime-local" name="expires_at"
+                 step="60">
+          <p class="small">Leave blank for no expiry. Regranting updates
+            the existing recipient's permission and expiry.</p>
           <button class="btn btn-primary">♧ Grant Access</button>
         </form>
-        <p class="small">Choose read or edit access for each user.</p>
       </div>
       <div class="card">
         <h2>Access control list</h2>
-        <p class="small">Revoke access to block future downloads.</p>
+        <p class="small">Expired grants remain listed for management but do
+          not authorize access.</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>USER</th><th>PERMISSION</th><th>ACTION</th></tr></thead>
+            <thead><tr><th>USER</th><th>PERMISSION</th>
+              <th>EXPIRY</th><th>ACTION</th></tr></thead>
             <tbody>PERMISSION_ROWS</tbody>
           </table>
         </div>
       </div>
     </div>
-    """.replace("DOCUMENT_NAME", doc["filename"]).replace(
+    """.replace("DOCUMENT_NAME", str(escape(doc["filename"]))).replace(
         "PERMISSION_ROWS", permission_rows
     )
 
@@ -2111,19 +2374,27 @@ def edit_document(document_id):
 
         permission = conn.execute(
             """
-            SELECT permission
+            SELECT permission, expires_at
             FROM document_permissions
             WHERE document_id = ? AND username = ?
             """,
             (document_id, username)
         ).fetchone()
 
+        expired_edit_grant = (
+            permission is not None
+            and permission["permission"] == "edit"
+            and share_is_expired(permission["expires_at"])
+        )
         has_edit_access = (
             permission is not None
             and permission["permission"] == "edit"
+            and not expired_edit_grant
         )
 
         if not (is_owner or is_admin or has_edit_access):
+            if expired_edit_grant:
+                log_expired_share_access(username, "EDIT", document_id)
             abort(403)
 
         if request.method == "POST":
@@ -2235,6 +2506,110 @@ def delete_document(document_id):
 # --------------------------------------------------
 # PART 4: ADMIN AUDIT DASHBOARD
 # --------------------------------------------------
+@app.route("/admin/security-dashboard")
+@role_required("admin")
+def security_dashboard():
+    conn = get_db_connection()
+    try:
+        total_documents = conn.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0]
+        shared_documents_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT p.document_id)
+            FROM document_permissions p
+            JOIN documents d ON d.id = p.document_id
+            WHERE p.expires_at IS NULL
+               OR julianday(p.expires_at) > julianday(?)
+            """,
+            (utc_now(),),
+        ).fetchone()[0]
+        denied_attempts = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE result = 'DENIED'"
+        ).fetchone()[0]
+        recent_logs = conn.execute(
+            """
+            SELECT timestamp, username, action, document_id, details, result
+            FROM audit_logs
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    content = """
+    <div class="grid stats">
+      <div class="stat">
+        <div class="stat-icon">▤</div>
+        <div class="stat-number">{{ total_documents }}</div>
+        <div class="stat-label">Total Documents</div>
+      </div>
+      <div class="stat">
+        <div class="stat-icon green">♧</div>
+        <div class="stat-number">{{ shared_documents_count }}</div>
+        <div class="stat-label">Documents With Active Shares</div>
+      </div>
+      <div class="stat">
+        <div class="stat-icon red">⛨</div>
+        <div class="stat-number">{{ denied_attempts }}</div>
+        <div class="stat-label">Access-Denied Attempts</div>
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Recent Audit Activity</h2>
+          <p class="small">Latest 10 recorded events. Detailed audit data is
+            available to administrators only.</p>
+        </div>
+        <a class="btn btn-small" href="{{ url_for('audit_logs') }}">
+          Open full audit trail
+        </a>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>TIMESTAMP (UTC)</th><th>USER</th><th>ACTION</th>
+              <th>DOCUMENT ID</th><th>DETAILS</th><th>RESULT</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in recent_logs %}
+              <tr>
+                <td>{{ log["timestamp"] }}</td>
+                <td>{{ log["username"] }}</td>
+                <td><b>{{ log["action"] }}</b></td>
+                <td>{{ log["document_id"] or "—" }}</td>
+                <td>{{ log["details"] or "—" }}</td>
+                <td>
+                  <span class="{{ 'badge red' if log['result'] == 'DENIED' else 'badge' }}">
+                    {{ log["result"] or "UNKNOWN" }}
+                  </span>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="6">No audit events recorded yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
+    return render_page(
+        "Security Dashboard",
+        content,
+        active="security-dashboard",
+        subtitle="Monitor documents, active shares, and denied access",
+        total_documents=total_documents,
+        shared_documents_count=shared_documents_count,
+        denied_attempts=denied_attempts,
+        recent_logs=recent_logs,
+    )
+
+
 @app.route("/admin/audit")
 @role_required("admin")
 def audit_logs():
@@ -2518,10 +2893,14 @@ def document_search():
                         WHERE p.document_id = d.id
                           AND p.username = ?
                           AND p.permission IN ('read', 'edit')
+                          AND (
+                            p.expires_at IS NULL
+                            OR julianday(p.expires_at) > julianday(?)
+                          )
                     )
                 )
             """
-            params = [role, user_id, username]
+            params = [role, user_id, username, utc_now()]
 
             if name:
                 query += " AND d.filename LIKE ?"
@@ -2659,7 +3038,7 @@ def document_search():
     return render_page(
         "Document Search",
         content,
-        active="mydocs",
+        active="search",
         subtitle="Search and filter authorised documents"
     )
 if __name__ == "__main__":
@@ -2675,12 +3054,12 @@ from datetime import datetime
 
 @app.route("/api/document-search", methods=["GET"])
 def trustvault_document_search():
-    # Require an authenticated user
     if not session.get("username"):
         abort(401)
 
     username = session["username"]
     role = session.get("role", "viewer")
+    user_id = session.get("user_id")
 
     filename = request.args.get("name", "").strip()
     owner = request.args.get("owner", "").strip()
@@ -2716,14 +3095,19 @@ def trustvault_document_search():
             LEFT JOIN document_permissions p
                 ON p.document_id = d.id
                 AND p.username = ?
+                AND p.permission IN ('read', 'edit')
+                AND (
+                    p.expires_at IS NULL
+                    OR julianday(p.expires_at) > julianday(?)
+                )
             WHERE (
                 (? = 'admin')
-                OR d.owner = ?
+                OR d.owner_id = ?
                 OR p.permission IN ('read', 'edit')
             )
         """
 
-        params = [username, role, username]
+        params = [username, utc_now(), role, user_id]
 
         if filename:
             query += " AND d.filename LIKE ?"
