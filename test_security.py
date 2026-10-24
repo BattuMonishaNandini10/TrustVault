@@ -3065,3 +3065,83 @@ def test_upload_over_request_size_limit_is_rejected_before_storage(
 
     assert document_count == 1
 
+
+def test_upload_content_validator_checks_supported_formats():
+    import io
+    import zipfile
+
+    docx_data = io.BytesIO()
+    with zipfile.ZipFile(docx_data, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "<document/>")
+
+    valid_files = [
+        ("report.pdf", b"%PDF-1.7\nreport\n"),
+        ("image.png", b"\x89PNG\r\n\x1a\nimage"),
+        ("photo.jpg", b"\xff\xd8\xffimage"),
+        ("document.docx", docx_data.getvalue()),
+        ("notes.txt", "Résumé".encode("utf-8")),
+        ("table.csv", b"name,amount\nTrustVault,1\n"),
+    ]
+
+    for filename, file_data in valid_files:
+        assert trustvault.validate_upload_content(
+            filename, file_data
+        ), filename
+
+    invalid_files = [
+        ("spoofed.pdf", b"not a PDF"),
+        ("spoofed.png", b"not a PNG"),
+        ("spoofed.jpg", b"not a JPEG"),
+        ("spoofed.docx", b"not a DOCX archive"),
+        ("binary.txt", b"\xff\x00\xfe"),
+        ("unsupported.exe", b"executable"),
+    ]
+
+    for filename, file_data in invalid_files:
+        assert not trustvault.validate_upload_content(
+            filename, file_data
+        ), filename
+
+
+def test_upload_rejects_mislabeled_file_before_storage(
+    isolated_app, monkeypatch
+):
+    import io
+
+    client = isolated_app.test_client()
+    uploaded_objects = []
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            uploaded_objects.append(kwargs)
+
+    monkeypatch.setattr(trustvault, "s3_client", FakeS3())
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "test_owner"
+        session["role"] = "owner"
+
+    response = client.post(
+        "/upload",
+        data={
+            "file": (io.BytesIO(b"this is not a PDF"), "mislabelled.pdf"),
+            "category": "Technical",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 302
+    assert uploaded_objects == []
+
+    conn = trustvault.get_db_connection()
+    try:
+        document_count = conn.execute(
+            "SELECT COUNT(*) FROM documents"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert document_count == 1
+

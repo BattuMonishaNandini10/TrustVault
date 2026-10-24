@@ -3,6 +3,7 @@ import os
 import sqlite3
 import hashlib
 import secrets
+import zipfile
 import boto3
 import subprocess
 import tempfile
@@ -700,6 +701,39 @@ def allowed_file(filename):
         "." in filename
         and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
     )
+
+
+def validate_upload_content(filename, file_data):
+    """Check the stored bytes against the allowed filename extension."""
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension == ".pdf":
+        return file_data.startswith(b"%PDF-")
+    if extension == ".png":
+        return file_data.startswith(b"\x89PNG\r\n\x1a\n")
+    if extension in (".jpg", ".jpeg"):
+        return file_data.startswith(b"\xff\xd8\xff")
+    if extension == ".docx":
+        try:
+            with zipfile.ZipFile(BytesIO(file_data)) as archive:
+                names = set(archive.namelist())
+            return (
+                "[Content_Types].xml" in names
+                and "word/document.xml" in names
+            )
+        except (OSError, zipfile.BadZipFile):
+            return False
+    if extension in (".txt", ".csv"):
+        try:
+            if file_data.startswith((b"\xff\xfe", b"\xfe\xff")):
+                text = file_data.decode("utf-16")
+            else:
+                text = file_data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return False
+        return "\x00" not in text
+
+    return False
 
 
 def document_path(stored_filename):
@@ -1536,6 +1570,12 @@ def upload_document():
 
             if not file_data:
                 flash("The selected document is empty.")
+                return redirect(url_for("upload_document"))
+
+            if not validate_upload_content(filename, file_data):
+                flash(
+                    "The file contents do not match the selected file type."
+                )
                 return redirect(url_for("upload_document"))
 
             # Upload the document to private S3 with server-side encryption.

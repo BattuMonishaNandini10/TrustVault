@@ -32,9 +32,11 @@ document grant. Every other account needs an active document-level grant.
 ## Upload validation and audit
 
 Uploads are limited to 10 MB per request, must use an allowed file extension
-(PDF, TXT, PNG, JPG/JPEG, DOCX, or CSV), must have a non-empty filename and
-content, and are stored under a sanitized filename. Uploads also receive a
-SHA-256 integrity hash.
+(PDF, TXT, PNG, JPG/JPEG, DOCX, or CSV), and must have a non-empty filename
+and content. Binary formats are checked against their file signatures; DOCX
+files must be ZIP packages containing the expected document parts, and TXT/CSV
+must decode as UTF-8 or BOM-marked UTF-16 text. Files are stored under a
+sanitized filename and receive a SHA-256 integrity hash.
 
 The audit trail records document uploads, downloads, views, metadata edits,
 deletions, grants, revocations, and denied access attempts. Only administrators
